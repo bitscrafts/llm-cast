@@ -1,0 +1,8 @@
+# Intermediate artifacts (never commit)
+/target/
+/_tmp/
+/.pidag/
+
+# Editor / OS noise
+.DS_Store
+*.swp

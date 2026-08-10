@@ -1,0 +1,33 @@
+[package]
+name = "cast-tv-terminal"
+version = "0.1.0"
+edition = "2021"
+description = "Display a terminal multiplexer session on TV via Chromecast using Default Media Receiver + HLS"
+
+[dependencies]
+alacritty_terminal = "0.24"
+tiny-skia = "0.11"
+tokio = { version = "1", features = ["full"] }
+axum = "0.7"
+tower-http = { version = "0.5", features = ["cors"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "1"
+bytes = "1"
+base64 = "0.22"
+log = "0.4"
+
+# gstreamer and rust_cast are optional / gated for now since they need system deps
+gstreamer = { version = "0.22", optional = true }
+gstreamer-video = { version = "0.22", optional = true }
+gstreamer-app = { version = "0.22", optional = true }
+rust_cast = { version = "0.17", optional = true }
+
+[features]
+default = []
+gstreamer = ["dep:gstreamer", "dep:gstreamer-video", "dep:gstreamer-app"]
+cast = ["dep:rust_cast"]
+
+[[test]]
+name = "cast_tv_tests"
+path = "tests/cast_tv_tests.rs"
