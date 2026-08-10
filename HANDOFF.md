@@ -1,9 +1,9 @@
 # HANDOFF — chromecast-tv-mirror
 
-**Status**: YELLOW — implementation STARTED but NOT complete (tool-iteration budget
-reached mid-TDD-cycle; all API intel verified, zero source files written yet)
-**Date**: 2026-08-08
-**Phase**: 3 — TDD implementation of `specs/01-cast-tv-terminal.md` (in progress)
+**Status**: YELLOW — pidag implementation relaunched post-pi-upgrade; worker DAG is
+RUNNING in background, outcome not yet confirmed at time of handoff.
+**Date**: 2026-08-10 (pi upgraded to 0.2.0, compaction bug fixed)
+**Phase**: 3 — TDD implementation of `specs/01-cast-tv-terminal.md` via pidag
 
 ---
 
