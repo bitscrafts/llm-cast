@@ -55,3 +55,43 @@ RUNNING in background, outcome not yet confirmed at time of handoff.
 
 ## Memory keys
 - `chromecast-tv-mirror/implementation/api-intel-v1` (NEW this session)
+
+---
+
+## PIDAG RUN RESULTS (2026-08-10, run ed3bc4990bcd) — post-upgrade live test
+
+**Outcome**: DAG COMPLETED — `successful_nodes:2, failed_nodes:2`. Worker `run`
+process ended; `sdd` driver (PID 617491) still idle.
+
+### Node-by-node
+1. `validate-baseline` ✗ failed (nothing implemented yet — expected).
+2. `implement-iter1` ran as `pi -p --mode json --model deepseek-v4-flash` (REAL worker,
+   compaction fixed, full JSON-lines agent transcript). **Wrote ZERO source files** —
+   it re-verified already-documented APIs, hit ITS OWN tool-iteration budget, and
+   emitted a handoff envelope instead of code. It overwrote `HANDOFF.md` (restored via git).
+3. `quality-gate-1` → `passed:true` but `fmt:false` + `test:false` (missing
+   tests/cast_tv_tests.rs). **BUG**: quality-gate masks failures with `|| echo ...passed:true`
+   in fmt/clippy/test branches → `passed` can be `true` even when tests fail.
+4. `validate-iter1` ✗ failed (exit criteria unmet).
+5. `implement-iter2` ⛔ **`NodeBlocked`** (deps unsatisfied because validate-iter1 failed).
+6. `DagDone`.
+
+### Key pidag findings (for pidag dev)
+- **`works` end-to-end post-upgrade** (worker dispatches, runs, returns, gates run).
+- **Bug A**: SDD loop does NOT feed a failed validation back into iterate — implement-iterN+1
+  gets BLOCKED on a failed validate-iterN instead of being given the failure to fix. So a
+  single failed iteration terminates the loop (no self-healing). Likely in sdd DAG gate logic.
+- **Bug B**: quality-gate `passed:true` despite failing fmt+test (the `2>/dev/null || echo passed:true`
+  fallbacks mask real failures). quality-gate should NOT swallow cargo fmt/test failures.
+- **Bug C (worker quality)**: a single `implement-iter1` "from scratch" node is too big; worker
+  re-derives API intel and exhausts its turn budget before writing files. Consider: pass api-intel
+  doc path in the implement prompt, or split into per-module implement nodes.
+- **No 429/exhaustion occurred** (deepseek-v4-flash answered every call), so free[0]→free[1]
+  fallback and iter3 paid-escalation were NOT exercised in this run. To test exhaustion
+  deterministically, use `TypeDispatchWorker::with_pi_command` + a fake `pi` that emits 429
+  (see /opt/pidag-src/src/scheduler/execute.rs + src/worker/mod.rs), or a real 429 from the API.
+
+### Next for pidag (parts)
+- Fix Bug A (validation-failure → pass failure text to next implement iter) and Bug B
+  (quality-gate honesty). Re-run the DAG to confirm the worker then converges.
+- Re-run `pidag sdd specs/01-cast-tv-terminal.md --run` after pidag fixes; worker may then write files.
