@@ -326,10 +326,19 @@ impl Perform for Emulator {
     }
 
     /// C0 controls: CR, LF, BS, HT; everything else is a no-op.
+    ///
+    /// LF is treated as a full newline (column reset included), matching what
+    /// the operator actually sees on the pane: a tty in canonical mode applies
+    /// ONLCR to `\n`, so pipe-pane output arrives as CRLF — but a bare-LF
+    /// stream (e.g. a plain text file fed to `--source`) must render the same
+    /// left-aligned way. Without the column reset each line starts where the
+    /// previous one ended and the screen becomes a staircase (milestone-2
+    /// operator-test finding, 2026-08-16).
     fn execute(&mut self, byte: u8) {
         match byte {
             b'\r' => self.col = 0,
             b'\n' => {
+                self.col = 0;
                 self.row += 1;
                 self.scroll_into_view();
             }
