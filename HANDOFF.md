@@ -1,11 +1,61 @@
 # HANDOFF — chromecast-tv-mirror
 
-**Status**: GREEN — spec-01 **parts 1 + 2 + 3 done** (part 1 emu+render,
-part 2 capture+cast, part 3 serve+encode). Gate GREEN, all 20 tests pass,
-all 5 part-3 exit criteria pass. Part 4 (cast sender integration + encode
-integration) is next.
+**Status**: GREEN — spec-01 **all 4 parts done** (part 1 emu+render, part 2
+capture+cast, part 3 serve+encode, part 4 closing sweep). Gate GREEN, all 21
+tests pass, all 4 part-4 exit criteria pass. The 10-test parent TDD contract
+is fully present and passing.
 **Date**: 2026-08-16
-**Phase**: 5 — spec-01: part 4 (rust_cast media_load + encoder feed) next
+**Phase**: 6 — spec-01 complete; next: optional rust_cast/gstreamer feature
+integration (media_load onto device, encoder feed), or ADR on option 2
+
+---
+
+## 2026-08-16 (part 4 session) — closing sweep; gate GREEN
+
+### What was DONE this session
+- **TDD first**: appended the missing 10th contract test
+  `test_no_production_unwrap` (R8) to `tests/cast_tv_tests.rs` — walks the six
+  module dirs (`src/capture|emu|render|encode|serve|cast`) relative to
+  `CARGO_MANIFEST_DIR` and fails on any non-test, non-comment line containing
+  `.unwrap()`/`.expect()`. Also asserts the walk is NOT vacuous: all six dirs
+  must exist and have been walked (a missing dir fails the test rather than
+  passing silently). Cleaned up the unused `Path` import.
+- **No production code changes needed**: the existing six module files already
+  comply with R8 (grep for `\.unwrap()|\.expect(` in src/ finds only
+  `unwrap_or` in emu/term.rs, which is not a call to unwrap()).
+- **Suite**: 21/21 pass (`test result: ok. 21 passed; 0 failed; ...`),
+  including the new `test_no_production_unwrap ... ok`. The full parent TDD
+  contract (all 10 tests) is present and green.
+
+### Outcome — gate GREEN (exit 0)
+```
+  cargo fmt --check            PASS
+  cargo check                  PASS
+  cargo clippy -D warnings     PASS
+  cargo test                   PASS
+QUALITY GATE: PASSED (rust)
+```
+
+### Exit criteria — all 4 pass (EC1-EC4 all exit 0)
+- EC1 `cargo test --test cast_tv_tests` → "test result: ok"
+- EC2 all six module files exist
+- EC3 wire field `"type": "LOAD"` in src/cast/sender.rs (the orchestrator
+  amended this criterion after the run — the old `grep "media/load"` passed
+  via doc comments only; same fix as part 2)
+- EC4 all six module dirs exist AND no `.unwrap()`/`.expect()` in them
+
+### Memory keys stored this session
+- `chromecast-tv-mirror/implementation/part4-no-unwrap-sweep` (0.7) — part-4
+  sweep done: 10/10 parent contract tests present+passing, no production
+  unwrap/expect; test asserts walk non-vacuous.
+
+### Next steps
+- Optional (feature-gated, needs system deps): rust_cast `media_load` HLS onto
+  a real device (cast feature) + encoder output feed into the HLS server
+  (gstreamer feature). If rust_cast cannot media_load HLS, stop and report for
+  explicit Option-2 decision (pivot guardrail).
+- Consider ADR for option 2 (HDMI dongle vs Chromecast) once live test happens.
+
 
 ---
 
