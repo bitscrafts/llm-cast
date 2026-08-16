@@ -7,7 +7,8 @@
 
 use std::str::FromStr;
 
-use rust_cast::channels::media::{Media, StreamType};
+use rust_cast::channels::media::Media;
+pub use rust_cast::channels::media::StreamType;
 use rust_cast::channels::receiver::{Application, CastDeviceApp};
 use rust_cast::CastDevice;
 
@@ -18,7 +19,7 @@ use super::sender::{CastError, DeviceAddr};
 /// controller only accepts media commands on a connected transport — without
 /// this the LOAD is silently dropped). Every `rust_cast::Error` is mapped to
 /// [`CastError::Session`]; the session never panics.
-fn connect_and_launch(device: &DeviceAddr) -> Result<(CastDevice, Application), CastError> {
+fn connect_and_launch(device: &DeviceAddr) -> Result<(CastDevice<'_>, Application), CastError> {
     // 1. TLS connect. Chromecast certs are self-signed, so host verification
     //    is disabled — `connect_without_host_verification` is expected here.
     let cast_device = CastDevice::connect_without_host_verification(&device.host, device.port)
@@ -53,19 +54,27 @@ fn connect_and_launch(device: &DeviceAddr) -> Result<(CastDevice, Application), 
     Ok((cast_device, application))
 }
 
-/// Connect to `device` and load the HLS `url` onto it via the Default Media
-/// Receiver. `stream_type` is [`StreamType::Live`] and the content type is
-/// `application/x-mpegURL` (the DMR's HLS player).
-pub fn send_load(device: &DeviceAddr, url: &str) -> Result<(), CastError> {
+/// Load media of any type onto `device` via the Default Media Receiver: the
+/// shared `media/load` used by all the typed helpers below. `stream_type` and
+/// `content_type` must match what the DMR's player-selection expects for the
+/// artifact — an HLS playlist wants `application/vnd.apple.mpegurl` (canonical,
+/// not `application/x-mpegURL`) + [`StreamType::Live`], a still image
+/// `image/jpeg` + [`StreamType::None`].
+pub fn send_media_load(
+    device: &DeviceAddr,
+    url: &str,
+    content_type: &str,
+    stream_type: StreamType,
+) -> Result<(), CastError> {
     let (cast_device, application) = connect_and_launch(device)?;
 
-    // 3. media/load — mirrors `Sender::build_media_load_request` (HLS, LIVE);
-    //    rust_cast builds the wire message from these fields. The destination
-    //    is the launched app's transport protocol (e.g. `web-1`).
+    // 3. media/load — mirrors `Sender::build_media_load_request`; rust_cast
+    //    builds the wire message from these fields. The destination is the
+    //    launched app's transport protocol (e.g. `web-1`).
     let media = Media {
         content_id: url.to_string(),
-        stream_type: StreamType::Live,
-        content_type: "application/x-mpegURL".to_string(),
+        stream_type,
+        content_type: content_type.to_string(),
         metadata: None,
         duration: None,
     };
@@ -76,25 +85,16 @@ pub fn send_load(device: &DeviceAddr, url: &str) -> Result<(), CastError> {
     Ok(())
 }
 
-/// Load a single static image onto `device` via the Default Media Receiver.
-/// The simplest possible cast — one fetch, no streaming, no playlist: the DMR
-/// renders the photo full-screen. Used as the ground-truth operator test that
-/// the cast leg (connect → launch → load) works end to end before any video.
-pub fn send_image_load(device: &DeviceAddr, url: &str) -> Result<(), CastError> {
-    let (cast_device, application) = connect_and_launch(device)?;
+/// Connect to `device` and load the HLS `url` onto it via the Default Media
+/// Receiver (live, `application/x-mpegURL`).
+pub fn send_load(device: &DeviceAddr, url: &str) -> Result<(), CastError> {
+    send_media_load(device, url, "application/x-mpegURL", StreamType::Live)
+}
 
-    // media/load with `StreamType::None` (the device auto-selects) and the
-    // image MIME; no duration for a still.
-    let media = Media {
-        content_id: url.to_string(),
-        stream_type: StreamType::None,
-        content_type: "image/jpeg".to_string(),
-        metadata: None,
-        duration: None,
-    };
-    cast_device
-        .media
-        .load(&application.transport_id, &application.session_id, &media)
-        .map_err(|e| CastError::Session(format!("image load: {e}")))?;
-    Ok(())
+/// Load a single static image onto `device` — the simplest possible cast:
+/// one fetch, no streaming, no playlist; the DMR renders the photo
+/// full-screen. The ground-truth operator test that the cast leg
+/// (connect → launch → load) works end to end before any video.
+pub fn send_image_load(device: &DeviceAddr, url: &str) -> Result<(), CastError> {
+    send_media_load(device, url, "image/jpeg", StreamType::None)
 }

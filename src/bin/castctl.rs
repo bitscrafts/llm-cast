@@ -1,11 +1,15 @@
 //! castctl — operator smoke-test binary for the milestone-1 device test.
 //!
-//! Usage: castctl [--image] <device-ip> <url>
+//! Usage: castctl [--image] [--type CONTENT-TYPE] <device-ip> <url>
 //!
 //! Uses the given device address (port 8009), launches the Default Media
-//! Receiver (CC1AD845) and sends the Cast v2 media/load for the URL. With
-//! `--image` the URL is a single JPEG (the simplest possible cast — proves the
-//! cast leg before any video); without it, an HLS stream URL.
+//! Receiver (CC1AD845) and sends the Cast v2 media/load for the URL. The
+//! stream type is derived from the content type: `image/*` → NONE,
+//! `video/mp4` → BUFFERED, anything `*mpegurl*`/m3u8 → LIVE.
+//!
+//! The ladder for the milestone-2 operator test: `--image` (a single JPEG —
+//! the simplest possible cast, proves the cast leg before any video), then a
+//! small MP4 (`--type video/mp4`), then HLS.
 //! Prints a clear PASS/FAIL line and exits non-zero on failure.
 //!
 //! Built without the `cast` feature it compiles but sends no session.
@@ -13,33 +17,70 @@
 use std::env;
 use std::process::ExitCode;
 
-use cast_tv_terminal::cast::{DeviceAddr, Sender};
+use cast_tv_terminal::cast::DeviceAddr;
+
+/// Map a MIME content type to the Cast stream type the DMR expects.
+fn stream_type_for(content_type: &str) -> &'static str {
+    if content_type.starts_with("image/") {
+        "NONE"
+    } else if content_type == "video/mp4" {
+        "BUFFERED"
+    } else {
+        "LIVE" // HLS playlists (application/vnd.apple.mpegurl, application/x-mpegURL)
+    }
+}
 
 fn main() -> ExitCode {
     let args: Vec<String> = env::args().collect();
-    // [--image] <device-ip> <url> — 3 or 4 args total.
-    if args.len() != 3 && args.len() != 4 {
-        eprintln!("usage: castctl [--image] <device-ip> <url>");
-        return ExitCode::from(2);
+
+    // Parse: [--image] [--type CT] <device-ip> <url>
+    let mut content_type = "application/x-mpegURL".to_string();
+    let mut ip: Option<String> = None;
+    let mut url: Option<String> = None;
+    let mut iter = args.iter().skip(1);
+    while let Some(arg) = iter.next() {
+        match arg.as_str() {
+            "--image" => content_type = "image/jpeg".to_string(),
+            "--type" => match iter.next() {
+                Some(ct) => content_type = ct.clone(),
+                None => {
+                    eprintln!("castctl: --type needs a value");
+                    return ExitCode::from(2);
+                }
+            },
+            other => {
+                if ip.is_none() {
+                    ip = Some(other.to_string());
+                } else if url.is_none() {
+                    url = Some(other.to_string());
+                } else {
+                    eprintln!("castctl: unexpected argument: {other}");
+                    return ExitCode::from(2);
+                }
+            }
+        }
     }
-    let (image_mode, ip, url) = if args.len() == 4 && args[1] == "--image" {
-        (true, args[2].clone(), args[3].clone())
-    } else {
-        (false, args[1].clone(), args[2].clone())
+    let (Some(ip), Some(url)) = (ip, url) else {
+        eprintln!("usage: castctl [--image] [--type CONTENT-TYPE] <device-ip> <url>");
+        return ExitCode::from(2);
     };
 
-    let mut sender = Sender::new(Box::new(move || Ok(DeviceAddr::new(ip.clone()))));
+    // castctl talks to the device directly via the session (no discovery —
+    // the operator supplies the address); `Sender` stays mirror's abstraction.
+    let device = DeviceAddr::new(ip);
 
     #[cfg(feature = "cast")]
     {
-        let result = if image_mode {
-            println!("castctl: loading image {url} onto {ip}:8009");
-            let device = DeviceAddr::new(ip);
-            cast_tv_terminal::cast::session::send_image_load(&device, &url)
-        } else {
-            println!("castctl: loading HLS {url} onto {ip}:8009");
-            sender.send_load(&url)
+        let stream_type = stream_type_for(&content_type);
+        println!("castctl: loading {content_type} ({stream_type}) {url} onto {}:8009", device.host);
+        // Parse the derived stream type back into rust_cast's enum.
+        let st = match stream_type {
+            "NONE" => cast_tv_terminal::cast::session::StreamType::None,
+            "BUFFERED" => cast_tv_terminal::cast::session::StreamType::Buffered,
+            _ => cast_tv_terminal::cast::session::StreamType::Live,
         };
+        let result =
+            cast_tv_terminal::cast::session::send_media_load(&device, &url, &content_type, st);
         match result {
             Ok(()) => println!("castctl: PASS — media load sent for {url}"),
             Err(e) => {
@@ -52,7 +93,7 @@ fn main() -> ExitCode {
 
     #[cfg(not(feature = "cast"))]
     {
-        let _ = (&image_mode, &url, &mut sender);
+        let _ = (&device, &url);
         println!(
             "castctl: built without the cast feature — no session will be sent; rebuild with --features cast"
         );
