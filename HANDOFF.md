@@ -1,16 +1,59 @@
 # HANDOFF — chromecast-tv-mirror
 
-**Status**: GREEN — spec-01 **all 6 parts done** + **milestone-1 device smoke
-test PASS** (2026-08-16): `castctl` on 10.10.10.208 loaded an HLS stream onto
-the Chromecast via rust_cast (DMR CC1AD845) and **Big Buck Bunny PLAYED on the
-TV**. Part 6 (full pipeline) IMPLEMENTED: the `mirror` binary wires
-capture→emu→render→encode→serve→cast, dry-run verifiable in-container. Gate
-GREEN — 29/29 tests default, 28/28 with `--features cast`. rust_cast **CAN**
-`media_load` HLS — no pivot to Option 2.
+**Status**: GREEN — **MILESTONE-2 operator test PASS** (2026-08-16): the full
+`mirror` pipeline (capture→emu→render→encode→serve→cast) now displays a live
+text pane **correctly on the TV** — clean multi-line, left-aligned,
+right-way-round text, operator-confirmed ("text is ok"). Cast ladder proven
+on-device: image/jpeg → MP4 → VOD HLS → **LIVE HLS** → live mirror text.
+Gate GREEN — 28/28 tests with `--features cast,gstreamer`.
 **Date**: 2026-08-16
-**Phase**: 9 — part-6 IMPLEMENTED + phase-7 committed. Next: milestone-2 full
-pipeline operator test on a LAN-reachable host (gstreamer encode + live
-herdr/tmux pane onto the device), then pidag (53 specs).
+**Phase**: 9 — milestone-2 PASS. Two rendering bugs found & fixed this session
+(LF column reset; font LSB bit order — commits a6ab372, 995f7ef). Next: real
+herdr/tmux live pane as `--source` (dynamic content), then audio check, then
+pidag (53 specs).
+
+---
+
+## 2026-08-16 (milestone-2 operator test session) — LIVE TEXT ON TV; two rendering bugs fixed
+
+### Cast ladder — every rung proven on the device (10.10.10.208, 720p)
+1. **image/jpeg** (`castctl --image`) → solid pink screen (cast leg works).
+2. **video/mp4 + BUFFERED** (`--type video/mp4`) → rainbow testsrc2 plays.
+3. **VOD HLS** (`application/vnd.apple.mpegurl` + LIVE) → 10-segment film plays.
+4. **LIVE HLS** from the running `mirror` → text reaches the TV.
+
+### Root causes discovered on-device (all committed with explanatory comments)
+- **Content type**: the DMR rejects `application/x-mpegURL` in a custom-sender
+  media/load — picks no HLS player, never fetches the manifest. Canonical
+  `application/vnd.apple.mpegurl` + `StreamType::Live` plays (963553a).
+- **Silent AAC is MANDATORY**: the DMR refuses video-only HLS (video-only
+  fetched 0 segments VOD / stalled after 2 live; same film with audio played
+  all). `hlssink2` video+audio pads, `audiotestsrc wave=silence` → `voaacenc`
+  (f924c57).
+- **`\n` must reset the column** (`a6ab372`): the emulator treated LF as a bare
+  line feed (row+1 only), so every line of a bare-LF `--source` started where
+  the previous line ended → diagonal "staircase", wrapping at the right edge.
+  A tty applies ONLCR so real pipe-pane output (CRLF) worked; the plain-text
+  test file exposed it. Verified via emulator grid dump + encoded-frame cell map.
+- **Font is LSB-first** (`995f7ef`): Hepper's `font8x8_basic` stores each glyph
+  row with **bit 0 = leftmost**, but `paint_tile` read MSB-first (`0x80 >> gx`),
+  flipping every glyph horizontally ("mirroed!"). Now `1 << gx`. The rasterize
+  test asserted the old (wrong) MSB interpretation — corrected.
+
+### Runtime topology (container)
+- `mirror` runs in-container on 0.0.0.0:18080; the operator device fetches
+  `http://10.10.10.217:18080/live.m3u8` via the host `socat` bridge
+  (18080→18081) + the container's reverse `ssh -N -R` tunnel. Verified frames:
+  encoded segment cell-map matches the emulator grid byte-for-byte (rows,
+  columns, and per-glyph pixels).
+- Operator workflow: build `--features cast,gstreamer`; restart `mirror` with
+  the same args to pick up a rebuilt binary (kills the old test process only —
+  never the host socat/tunnel, herdr, or llama-server).
+
+### Next steps
+- Feed a **real herdr/tmux pipe-pane** as `--source` for dynamic content.
+- Audio (user: "we will check the audio later").
+- Then pidag (53 specs).
 
 ---
 
