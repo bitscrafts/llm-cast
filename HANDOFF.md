@@ -1,9 +1,11 @@
 # HANDOFF — chromecast-tv-mirror
 
-**Status**: GREEN — spec-02 terminal cell damage tracker implemented, D2d
-semantics fixed and pinned, quality gate PASSED (fmt/check/clippy/test).
+**Status**: GREEN — spec-02 implemented; **spec-01 part 1 (emu + render) done**:
+gate GREEN, review PASS, validate 5/5. Implemented by pi via the harness;
+the loop stopped on the new exit-7 no-commit check (pi committed two doc
+files), the orchestrator unwound and re-ran phases 3/5/6.
 **Date**: 2026-08-16
-**Phase**: 4 — spec-01: terminal core (part 1) first dispatch
+**Phase**: 5 — spec-01: part 2 (capture + cast) next
 
 ---
 

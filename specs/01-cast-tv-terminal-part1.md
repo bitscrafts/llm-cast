@@ -3,8 +3,11 @@
 **Parent-Spec**: `01-cast-tv-terminal.md`
 **Part**: 1 of 4
 **Covers**: R2 (vte parse → grid), R3 (rasterize), R7 (full-first-then-diff)
-**Status**: SPECIFIED — REWRITTEN 2026-08-16, AMENDED 2026-08-16 (after the
-implement pass). The original Part 1 had an empty TDD Contract and covered only
+**Status**: SPECIFIED — REWRITTEN 2026-08-16 · AMENDED 2026-08-16 (after the
+implement pass) · IMPLEMENTED 2026-08-16 — gate GREEN, review PASS, validate
+5/5 (recovered from exit 7: the workhorse committed two doc files; the
+orchestrator unwound, amended, re-ran phases 3/5/6). The original Part 1 had an
+empty TDD Contract and covered only
 meta exit criteria (whole-suite pass, quality gate) — it would have dispatched
 nothing. This part now builds the terminal core — emulator grid + rasterizer —
 which every later part consumes. It also adopts the render module (R3), which
