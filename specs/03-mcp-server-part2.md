@@ -103,9 +103,12 @@ Implements the master spec's R1 (server surface), R3 (cast_url *tool*), R4–R9
   `Runner::spawn_detached` and write its pid; focus the first cycle window.
   With `restart_cycle=false`, no spawn.
 - **R9 (mirror_session tool)**: relaunch the display xterm attached to a live
-  session — `attach_shell(session, readonly, window)`; herdr `herdr --session
-  <name>`, tmux `tmux attach-session -t <name> [-r]`; optionally focus a target
-  window. Never targets the operator's live default session first (G7).
+  session — kill the current display xterm, optionally `mux.focus(window)`, then
+  spawn a new one running part 1's single-arg `attach_shell(session)` (herdr:
+  `exec herdr --session <name>`; tmux: `exec tmux attach -t <name> -r` — the
+  readonly `-r` is baked into the part-1 tmux driver; `attach` is the
+  `attach-session` alias). Never targets the operator's live default session
+  first (G7).
 - **R10 (error surface, handler layer)**: every tool returns `CallToolResult` —
   success on success, `CallToolResult::error(...)` on operational failure
   (mux/cast/arg validation), and only genuinely unexpected internal state maps
@@ -179,7 +182,7 @@ socket, or kills a real xterm.
 | R6 | `test_set_font_size_relaunch` | `FakeRunner` pgrep→`[1234]` | `kill(1234)` then `spawn` argv contains `-fs 15`, `DISPLAY=:99`, geometry; `remove_env` contains `HERDR_ENV` |
 | R6 | `test_set_font_size_rejects_range` | `pts=100` | `is_error` result; `spawn` never called |
 | R8 | `test_restore_focus_and_cycle` | `FakeMux`+`FakeRunner` | cycle-loop killed (pid file + pgrep); focus first cycle window; `spawn_detached` `bash -c` loop contains the socket and `tab focus w1:t1`; pid written; `restart_cycle=false` → no spawn |
-| R9 | `test_mirror_session_relaunch` | `FakeRunner` | kill + `spawn` argv `-e /bin/sh -c 'exec herdr --session <name>'`; tmux variant `attach-session -t <name> -r` when readonly |
+| R9 | `test_mirror_session_relaunch` | `FakeRunner` | kill + (focus when a window arg is given) + `spawn` argv `-e /bin/sh -c 'exec herdr --session <name>'`; tmux variant `exec tmux attach -t <name> -r` (part 1's driver, readonly baked in) |
 | R7 | `test_pipeline_status_json` | scratch HLS dir + scripted tabs/panes | text parses as JSON; `hls.last_segment` set; tabs populated; a missing piece (e.g. no playlist) → null/absent marker, no panic |
 
 **R10 is the acceptance test, at the handler layer** — `test_set_font_size_rejects_range`

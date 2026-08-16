@@ -199,7 +199,7 @@ src/
 
 **Key decision — Mux trait over protocol-specific backends.** All display tools
 call the `Mux` trait (`ensure_window`, `focus`, `send_text`, `run_command`,
-`close_window`, `list_windows`, `list_panes`, `shell_focus_line`,
+`close_window`, `list_windows`, `list_panes`,
 `attach_shell`); `HerdrMux` and `TmuxMux` implement it. **Rejected:** tools
 calling the herdr CLI directly. The operator's requirement is explicit — the
 display layer must work with herdr AND be tmux-compatible — and a future
