@@ -639,9 +639,11 @@ async fn test_serve_hls_binds_and_responds() {
 
 use std::path::PathBuf;
 
-/// R8 — no production file under the six module dirs may call `.unwrap()` or
+/// R8 — no production file under the module dirs (six pipeline modules, plus
+/// the spec-03 `src/mcp` and `src/mux` since part 1) may call `.unwrap()` or
 /// `.expect()` on a non-test, non-comment line. Panic points in a pipeline
-/// that must degrade safely are forbidden.
+/// that must degrade safely are forbidden; a panic in the MCP server is a
+/// crashed stdio session.
 #[test]
 fn test_no_production_unwrap() {
     let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
@@ -652,6 +654,8 @@ fn test_no_production_unwrap() {
         "src/encode",
         "src/serve",
         "src/cast",
+        "src/mcp",
+        "src/mux",
     ];
 
     let mut checked = 0usize;
@@ -707,8 +711,8 @@ fn test_no_production_unwrap() {
     );
     assert_eq!(
         checked_dirs.len(),
-        6,
-        "all six module dirs must have been walked, got {checked_dirs:?}"
+        8,
+        "all eight module dirs must have been walked, got {checked_dirs:?}"
     );
     assert!(
         offenders.is_empty(),

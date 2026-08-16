@@ -27,6 +27,9 @@ gstreamer = { version = "0.22", optional = true }
 gstreamer-video = { version = "0.22", optional = true }
 gstreamer-app = { version = "0.22", optional = true }
 rust_cast = { version = "0.17", optional = true }
+# MCP server (spec-03). Pinned to the 3.x series; its rustix tree must coexist
+# with the spec-02 `std` pin (spec-03 G9: never remove the pin).
+rmcp = { version = "3", features = ["server", "macros", "transport-io", "schemars"] }
 
 [features]
 default = []
@@ -36,3 +39,7 @@ cast = ["dep:rust_cast"]
 [[test]]
 name = "cast_tv_tests"
 path = "tests/cast_tv_tests.rs"
+
+[[test]]
+name = "mcp_tests"
+path = "tests/mcp_tests.rs"

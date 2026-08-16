@@ -6,6 +6,8 @@ pub mod cast;
 pub mod damage;
 pub mod emu;
 pub mod encode;
+pub mod mcp;
+pub mod mux;
 pub mod pipeline;
 pub mod render;
 pub mod serve;
