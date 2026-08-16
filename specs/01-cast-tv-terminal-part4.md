@@ -10,7 +10,11 @@ sweep made fail-closed so a missing module dir fails rather than passing
 vacuously). AMENDED AGAIN 2026-08-16 after the implement pass: exit criterion
 3 still grepped the literal `"media/load"` (comment-trivial — the Cast v2
 wire message type is `"type": "LOAD"`); criterion 3 now greps the wire field,
-matching the part-2 amendment.
+matching the part-2 amendment. IMPLEMENTED 2026-08-16 — gate GREEN, review
+PASS, validate 4/4 (on the amended spec), EXIT 0, no exit-7 violation.
+**spec-01 complete: all 4 parts implemented; the full 10-test parent TDD
+contract present and passing (21 tests); all six modules built under default
+features.**
 
 ## Overview
 
