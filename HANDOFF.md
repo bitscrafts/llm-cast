@@ -669,3 +669,55 @@ process ended; `sdd` driver (PID 617491) still idle.
   `gstreamer` feature; then Part 4: wire rust_cast session + media_load behind `cast` feature.
 - Note for pidag dev (Bug A/B from prior run): implement-iter1 still wrote no files; the direct
   implementation path above is the fallback that works.
+
+---
+
+## 2026-08-16 (framebuffer milestone) — REAL htop pane on the TV; escape-parsing abandoned
+
+### What changed
+The live text pane moved from the emulator re-parsing a byte stream to **real
+framebuffer capture**: Xvfb + xterm running actual `htop`, ffmpeg `x11grab`
+encodes the X screen to HLS, the DMR casts it. Whatever is on the X screen is
+cast — there is no parser to drift. Operator-confirmed: "everything is there!",
+then font quality fixed: "fonts are better... almost usable".
+
+### Why the pivot
+Real ncurses apps (htop) only rewrite *changed* cells with the full CSI set.
+The hand-rolled emulator missed CHA/VPA/EL/ED (added in `d61e4b4`, 33/33
+tests) but the class of bug — divergence never corrected, because ncurses never
+re-emits untouched cells — is inherent to parsing. The framebuffer has no such
+class.
+
+### Live framebuffer stack (container; restart order matters)
+- `Xvfb :99 -screen 0 1280x720x24 -ac -nolisten tcp`
+- `DISPLAY=:99 xterm -class XTerm -fn 8x13 -geometry 159x55+0+0 -xrm
+  'XTerm*background: black' -xrm 'XTerm*foreground: white' -e htop`
+  — 8×13 misc-fixed fills 1280×720 at 159×55. 6×13 was too thin (1px strokes
+  = blur under x264); 8×13 gives 2px strokes. xterm defaults to a WHITE
+  background — must pass black resources.
+- ffmpeg x11grab → HLS, **silent AAC mandatory** (video-only HLS is refused by
+  the DMR, re-confirmed):
+  `-f x11grab -video_size 1280x720 -framerate 10 -draw_mouse 0 -i :99 -f lavfi
+  -i anullsrc=channel_layout=stereo:sample_rate=44100 -map 0:v -map 1:a
+  -c:v libx264 -preset medium -tune zerolatency -pix_fmt yuv420p -crf 16
+  -g 10 -sc_threshold 0 -deblock 0 -c:a aac -b:a 128k -f hls -hls_time 1
+  -hls_list_size 6 -hls_flags delete_segments -hls_base_url
+  http://10.10.10.217:18080/ /tmp/m2/xhls/live.m3u8`
+- python `hls_server.py` serves /tmp/m2/xhls on 0.0.0.0:18080 with
+  `application/vnd.apple.mpegurl` (.m3u8) / `video/mp2t` (.ts) + CORS.
+- Same reverse tunnel as before (host socat 18080→18081 + container
+  `ssh -N -R`) delivers it to 10.10.10.208.
+
+### Font-blur fix (measured)
+Edge-sharpness (per-pixel vertical-gradient energy), same frame through each
+setting: old `-preset veryfast -b:v 2M` = **79%** of raw; `-preset medium
+-crf 18` = 98%; `-crf 16 -deblock 0` (live now) = **98.3%**. The 2M veryfast
+encode was the blur; deblock off keeps thin glyph edges crisp.
+
+### Next steps
+- Audio check (user: "we will check the audio later").
+- Then pidag (53 specs).
+- Rust-native mirror alternative recommended (not started): `vt100` crate +
+  `fontdue` TTF rasterizer → 1280×720 RGBA in-container, no Xvfb/apt. Note:
+  Xvfb/xterm/fonts were apt-installed — overlayfs `/` means they do NOT
+  survive a container reboot; only `/root` and `/projects` persist.
