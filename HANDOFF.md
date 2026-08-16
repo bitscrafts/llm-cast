@@ -14,16 +14,35 @@ pidag (53 specs).
 
 ---
 
-## 2026-08-16 — SPEC-03 RE-DISPATCH (mcp-server): READ THIS FIRST
+## 2026-08-16 — SPEC-03 (mcp-server) PART 1 LANDED: mux dual-driver + seams
 
-> Current work is **spec-03 (MCP-over-stdio Chromecast control server)** —
-> implemented via `pi-workhorse.sh run specs/03-mcp-server.md`. The previous
-> run exhausted its tool budget before writing code (exit 4). Its research
-> checkpoint is in **`HANDOFF-incomplete.md` — read it before this file**: it
-> has the rmcp 3.1.2 API verification, the herdr-cli argv/JSON shapes, the
-> spec-conflict note (resolved: HEAD is now fmt-clean, commits 1166c14 +
-> 0854cf5), and the implementation order for this run. HEAD is clean at commit
-> `0854cf5`.
+> Current work is **spec-03 (MCP-over-stdio Chromecast control server)**,
+> split into 3 parts (commit `889848b`; master spec
+> `specs/03-mcp-server.md` is the source of truth).
+>
+> **Part 1 is DONE** — implemented by the ORCHESTRATOR (operator: "do it
+> yourself this time only!"), committed `d539eba`, 13/13 exit criteria green
+> (build / --features cast / --features cast,gstreamer / test 34+9 / clippy
+> -D warnings / fmt). What landed: `src/mux` (`Mux` trait + `HerdrMux`/
+> `TmuxMux`, `shell_single_quote`, lazy `open()`), `src/mcp` (`McpServerError`,
+> `Config::from_env`, `Runner`/`ProcRunner`, `CastPort`+`stream_type_for`),
+> `rmcp 3` in Cargo.toml (resolves against the rustix `std` pin), 9 part-1
+> unit tests (acceptance `test_runner_removes_herdr_env` uses the REAL
+> `ProcRunner`), meta-test walks 8 dirs.
+>
+> **Verified live during implementation** (read-only): herdr JSON contract is
+> `result.tabs[].tab_id|label` and `result.panes[].pane_id|tab_id` — NOT the
+> guessed `id`/`window_id` top-level shape; both drivers parse the verified
+> shapes. herdr CLI confirmed: `tab create --workspace/--label/--no-focus`,
+> `tab focus <id>`, `tab close <id>`, `pane run <id> <cmd>...`.
+>
+> **Next: dispatch part 2** (`specs/03-mcp-server-part2.md`) via
+> `pi-workhorse.sh` — the `McpServer` struct, 7 tools, `ServerHandler`,
+> `serve_stdio`, `bin/mcp-server.rs`. Part 3 (E2E stdio) after that. Phase 8
+> (live TV verify + tmux parity) runs when all three parts land.
+>
+> Prior stalled-run research: `HANDOFF-incomplete.md` (rmcp 3.1.2 API,
+> herdr CLI argv/JSON, implementation order).
 
 ---
 

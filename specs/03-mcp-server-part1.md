@@ -2,9 +2,10 @@
 
 - **Project**: `/projects/chromecast-tv-mirror`
 - **Priority**: foundation of the MCP-over-stdio Chromecast control server — the mux layer and the server's process/config/cast seams, before any tool surface
-- **Status**: SPECIFIED — not yet dispatched · *(lifecycle: SPECIFIED → IN PROGRESS
-  on dispatch → IMPLEMENTED — awaiting review → DONE after the orchestrator
-  commits and updates HANDOFF.md)*
+- **Status**: **DONE** — implemented by the orchestrator (2026-08-16), commit
+  `d539eba`; 13/13 exit criteria green; HANDOFF updated. · *(lifecycle:
+  SPECIFIED → IN PROGRESS on dispatch → IMPLEMENTED — awaiting review → DONE
+  after the orchestrator commits and updates HANDOFF.md)*
 - **Source**: operator requirement: MCP-over-stdio Chromecast control server; split of specs/03-mcp-server.md after two stalled workhorse runs (2026-08-16)
 - **Depends-On**: spec-01 (reuses `src/cast` + the gate/test conventions), spec-02 (keeps the rustix `std` pin and the no-unwrap meta-test). This is part 1 of 3 of spec-03 — the master spec `specs/03-mcp-server.md` is the source of truth.
 
