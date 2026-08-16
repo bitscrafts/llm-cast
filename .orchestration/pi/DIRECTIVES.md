@@ -100,7 +100,12 @@ narration, "Let me…", or a bare statement of intent. Do not pause mid-task for
 permission on routine steps. If you genuinely cannot proceed, say so in one line
 and stop.
 
-A turn that produces text but no tool call is a failed turn.
+A turn that produces text but no tool call is a failed turn. **A turn full of
+read-only research calls but no file writes is a failed turn too.** Reading the
+spec and dependencies is preparation; the deliverable is the spec's tests and
+code written to disk. The harness checks the working tree and escalates a turn
+that ended without any implementation files, so a "I researched it, the next
+agent writes it" handoff is a stall, not progress.
 
 ## 10. Be terse.
 

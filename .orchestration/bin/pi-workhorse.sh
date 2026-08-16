@@ -137,6 +137,10 @@ case "$CMD" in
 Write the tests from its TDD Contract FIRST, then the production code.
 Verify with:  $ORCH_HOME/lib/quality-gate.sh $ROOT
 Do not stop until it exits 0, or until you hit something the spec gets wrong.
+You are the implementer, not a researcher. Writing the tests and code is the
+deliverable; reading the spec and dependencies is only preparation. The harness
+treats a turn that ends without writing any implementation files as a stall and
+escalates to another model.
 
 Then update HANDOFF.md: what you did, the outcome, and what comes next.
 
@@ -242,15 +246,13 @@ FAIL if any requirement is unimplemented or any test was weakened."
     echo "== phase 2: implement =="
     imp_log="$ROOT/_tmp/pi-implement.$$.log"
     mkdir -p "$(dirname "$imp_log")"
-    before="$(cd "$ROOT" && git status --porcelain 2>/dev/null)"
     head0="$(cd "$ROOT" && git rev-parse HEAD 2>/dev/null)"
 
     # DIRECTIVES section 1 forbids the workhorse from committing -- but that
     # rule is PROMPT-LEVEL ONLY. pi's own configuration (e.g. a planner
     # profile) does not forbid git commit, so the harness must detect it
-    # mechanically. A committed change also breaks the before/after tree
-    # comparison below (both would read clean), so HEAD movement is checked
-    # first, after every pi invocation.
+    # mechanically. A committed change would also read as a clean tree, so HEAD
+    # movement is checked first, after every pi invocation.
     check_no_commit() {
         local now
         now="$(cd "$ROOT" && git rev-parse HEAD 2>/dev/null)"
@@ -263,28 +265,38 @@ FAIL if any requirement is unimplemented or any test was weakened."
         fi
     }
 
+    # Does the working tree carry an IMPLEMENTATION change? The workhorse may
+    # edit its own handoff diary (HANDOFF*.md) or scratch (_tmp/) and still
+    # have produced nothing real -- run #2 changed only HANDOFF-incomplete.md,
+    # which the old before/after porcelain comparison counted as "changed" and
+    # so skipped escalation. Only a path OUTSIDE the non-implementation set
+    # (handoff, scratch, specs, the harness itself) counts as implementation.
+    implementation_changed() {
+        local status
+        status="$(cd "$ROOT" && git status --porcelain 2>/dev/null)"
+        [ -n "$(printf '%s' "$status" | grep -vE 'HANDOFF|_tmp/|specs/|\.orchestration/|\.claude/' | head -1)" ]
+    }
+
     "$SELF" implement "$SPEC" "$ROOT" 2>&1 | tee "$imp_log"
     imp_rc="${PIPESTATUS[0]}"
-    after="$(cd "$ROOT" && git status --porcelain 2>/dev/null)"
     check_no_commit
 
     # Escalate when implement PRODUCES NOTHING, not only when the gate fails.
     # The repair ladder below never engages if phase 2 stalls: a flash model
     # once ran 40 minutes on a large repo, wrote nothing, and never reached the
-    # gate, so escalation had to be done by hand. A timeout (124) or an
-    # unchanged tree is the signal.
-    if [ "$imp_rc" -eq 124 ] || { [ "$before" = "$after" ] && ! grep -qE '^\s*SPEC-DEFECT:' "$imp_log"; }; then
+    # gate, so escalation had to be done by hand. A timeout (124) or no
+    # implementation-relevant change is the signal.
+    if [ "$imp_rc" -eq 124 ] || { ! implementation_changed && ! grep -qE '^\s*SPEC-DEFECT:' "$imp_log"; }; then
         if [ "$imp_rc" -eq 124 ]; then
             echo "== phase 2: implement timed out -- escalating =="
         else
-            echo "== phase 2: implement changed nothing -- escalating =="
+            echo "== phase 2: implement wrote no implementation files -- escalating =="
         fi
         "$SELF" implement "$SPEC" "$ROOT" --escalate 2>&1 | tee "$imp_log"
-        after="$(cd "$ROOT" && git status --porcelain 2>/dev/null)"
         check_no_commit
-        if [ "$before" = "$after" ] && ! grep -qE '^\s*SPEC-DEFECT:' "$imp_log"; then
+        if ! implementation_changed && ! grep -qE '^\s*SPEC-DEFECT:' "$imp_log"; then
             echo
-            echo "STOPPED: implement produced no change even after escalation."
+            echo "STOPPED: implement produced no implementation files even after escalation."
             echo "The spec is probably too large for a workhorse on this repo. Narrow it."
             rm -f "$imp_log"
             exit 6
