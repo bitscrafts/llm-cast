@@ -1,11 +1,63 @@
 # HANDOFF — chromecast-tv-mirror
 
-**Status**: YELLOW — pidag implementation relaunched post-pi-upgrade; worker DAG is
-RUNNING in background, outcome not yet confirmed at time of handoff.
-**Date**: 2026-08-10 (pi upgraded to 0.2.0, compaction bug fixed)
-**Phase**: 3 — TDD implementation of `specs/01-cast-tv-terminal.md` via pidag
+**Status**: YELLOW — spec-02 damage tracker implemented and test-verified in
+isolation, but quality gate cannot pass: `alacritty_terminal 0.24.2` does not
+compile on this toolchain (upstream defect, see below). SPEC-DEFECT reported.
+**Date**: 2026-08-16
+**Phase**: 3 — spec-02 terminal cell damage tracker
 
 ---
+
+## 2026-08-16 — spec-02 damage tracker: code done, gate blocked by dependency defect
+
+### What was DONE this session
+- **`src/lib.rs`** (NEW): declares `pub mod damage;`.
+- **`src/damage.rs`** (NEW): `CellKey {row: i32, col: usize}` (Debug/Clone/Copy/
+  PartialEq/Eq/Hash), `CellContent {ch, fg, bg, flags}` (Debug/Clone/Copy/
+  PartialEq/Eq), `DamageTracker::new()` / `diff(&[(CellKey, CellContent)]) -> Vec<CellKey>`
+  / `reset()`, plus `Default`. Semantics: first call damages everything; identical
+  input → empty; removed keys forgotten (reappearance = first-time damage, D5);
+  output sorted row desc / col asc (D6); duplicate keys per call last-write-wins,
+  reported at most once; no unwrap/expect/panic (N2).
+- **`tests/cast_tv_tests.rs`** (NEW): all 10 TDD-Contract tests (D3, D4, D2a/b/c,
+  D5a, D5b acceptance, D6, D7 + duplicate-key). Wrote tests FIRST; they caught a
+  real bug in my first tracker draft (unchanged keys were purged from the retained
+  map because `seen.insert` only ran in the changed-branch — fixed).
+- **`Cargo.toml` and `src/render/font.rs` untouched** (N1/N4). `cargo fmt` clean on
+  new files.
+
+### Outcome
+- Tracker verified CORRECT: isolated scratch crate `_tmp/damage-verify/` (no
+  alacritty dep; same source + tests) → `test result: ok. 10 passed; 0 failed`.
+- **Gate `QUALITY GATE: FAILED (rust)`, exit 1** — fmt PASS, but check/clippy/test
+  FAIL, all with the SAME root cause (9× E0277/E0308, all in
+  `alacritty_terminal-0.24.2/src/tty/unix.rs`):
+  `alacritty_terminal 0.24.2` → `rustix-openpty 0.1.1` (a `#![no_std]` crate) →
+  `rustix 0.38.44` with features alloc/fs/termios but **NOT std**; nothing else in
+  the graph depends on rustix 0.38.x, so its `std` feature can never be enabled →
+  rustix uses its no_std fd polyfill whose `AsFd` trait differs from
+  `std::os::fd::AsFd` → `tcgetattr`/`tcsetattr` calls in alacritty_terminal fail to
+  compile. Upstream defect (known; fixed only in rustix-openpty 0.2.0 /
+  alacritty_terminal 0.25+, both UNREACHABLE under `alacritty_terminal = "0.24"`
+  / `rustix-openpty = "0.1.1"` without editing Cargo.toml). This was latent at
+  baseline: the missing-test-file resolution error aborted before dependency
+  compilation, so it was never observed.
+- **SPEC-DEFECT reported**: exit criteria (gate passes) unreachable under G3/N1
+  (Cargo.toml untouchable). This is a spec premise error, not a code error.
+
+### What REMAINS (next agent — resume here)
+1. Fix the dependency before the gate can ever pass:
+   - Edit `Cargo.toml`: either add `rustix = { version = "0.38", features = ["std"] }`
+     (unblocks rustix 0.38.44's std polyfill), or bump `alacritty_terminal` to
+     0.25/0.26 (which uses rustix-openpty 0.2 → rustix 1.x). Requires a spec
+     amendment (G3 forbids it as-is).
+   - A lock-only `cargo update` CANNOT fix it (verified: 0.24.2 is the last 0.24.x;
+     rustix-openpty 0.2.0 needs rustix ^1.0 and is not allowed by 0.24.2's req).
+2. Then re-run the gate; spec-02 code should need no further changes.
+3. After spec-02 lands: renderer diff consumption, then spec-01 modules (emu,
+   render, capture, serve, cast, encode) per `specs/01-cast-tv-terminal.md`.
+
+## Previous session (2026-08-10) — retained below
 
 ## What was DONE this session
 
