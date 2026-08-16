@@ -55,28 +55,47 @@ Notes:
 
 ## Host-side (podman host `lnx`, 10.10.10.217) — LAN reachability forward
 
-The Chromecast (10.10.10.208) cannot reach the container's private bridge
-(`10.89.0.2`) — it can only reach the host's LAN IP `10.10.10.217`, and the host
-only publishes the container ports created with `podman run -p`. Adding a new
-published port would require recreating the container (not allowed mid-run). So the
-host runs a **userspace TCP forward** that needs `socat` on the host:
+**Topology (learned the hard way, 2026-08-16):** `pidag-runner` is **rootless
+podman** (`podman info` → `rootless=true`). Its `10.89.0.2` is a *virtual*
+address with **no route from the host** — the host cannot reach the container by
+IP at all (`connect 10.89.0.2:18080` → "Connection timed out"), and the container
+can only reach *published* host ports (`-p`). So a plain host-side socat →
+container-IP forward **cannot work**. Only two mechanisms bridge the container:
 
-```bash
-# on the host (as root, or sudo):
-apt-get install -y socat
-socat TCP-LISTEN:18080,fork,reuseaddr,bind=10.10.10.217 TCP:10.89.0.2:18080 &
-```
+1. **Durable fix — publish the port** in `podman-compose.yml`:
+   ```yaml
+   ports:
+     - "4601:4601"
+     - "8080:8080"  # llama-server (Laguna local inference)
+     - "18080:18080"  # mirror HLS (chromecast-tv-mirror milestone-2)
+   ```
+   Takes effect on the **next container recreate** (does not disturb a running
+   container). This is what's committed to the podman files.
 
-- `bind=10.10.10.217` — only the LAN interface (the Chromecast's path).
-- `TCP:10.89.0.2:18080` — the container's bridge address + the `mirror` HLS port.
-- Userspace relay: the running container is never touched (no recreate, no restart).
-- **Ephemeral on the host** — a `&`-backgrounded process dies with the shell; for
-  durability add it to the host's init/compose, e.g.:
-  ```yaml
-  # compose `services.mirror-forward` on the HOST (not the container):
-  image: alpine/socat:latest
-  command: TCP-LISTEN:18080,fork,reuseaddr,proxyport=10.89.0.2 TCP:10.89.0.2:18080
-  network_mode: host
-  ```
+2. **Mid-run fix (container stays up) — reverse SSH tunnel + host socat.**
+   The container *can* reach the host (`host.containers.internal` =
+   `169.254.1.2`), so the container initiates a tunnel and the host socat
+   bridges LAN 18080 → the tunneled loopback port:
+   ```bash
+   # host: bridge the LAN port to the tunnel (needs socat on the host)
+   sudo apt-get install -y socat
+   setsid nohup socat TCP-LISTEN:18080,fork,reuseaddr,bind=0.0.0.0 \
+       TCP:127.0.0.1:18081 >> /tmp/mirror-forward.log 2>&1 &
+
+   # container: reverse tunnel, host 127.0.0.1:18081 -> mirror 18080
+   setsid nohup ssh -N -o ExitOnForwardFailure=yes -o ServerAliveInterval=30 \
+       -o ServerAliveCountMax=3 -R 127.0.0.1:18081:127.0.0.1:18080 \
+       mvcorrea@169.254.1.2 &
+   ```
+   Path: `TV → 10.10.10.217:18080 → host socat → 127.0.0.1:18081 → SSH → mirror`.
+   sshd binds the `-R` port on loopback only (`GatewayPorts no`), hence the socat
+   hop. Firewall is permissive (iptables INPUT ACCEPT), so LAN clients pass.
+   These two processes are ephemeral; both survive the launching shell
+   (`setsid nohup`) but not a host/container reboot.
+
+> ⚠️ Do NOT `pkill -f "socat TCP-LISTEN:18080"` inside a command that *also*
+> starts/contains the socat string — the pattern matches your own command line
+> and kills your own SSH session (exit 144). Kill in a separate invocation, or
+> use a non-self-matching regex like `1808[0]`.
 
 <!-- More installs get appended here as the milestone-2 run needs them. -->
