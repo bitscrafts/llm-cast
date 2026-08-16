@@ -2,6 +2,8 @@
 /target/
 /_tmp/
 /.pidag/
+/.orchestration/*.bak-*
+/_tmp-*.log
 
 # Editor / OS noise
 .DS_Store
