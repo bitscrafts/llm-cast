@@ -86,9 +86,16 @@ pub fn send_media_load(
 }
 
 /// Connect to `device` and load the HLS `url` onto it via the Default Media
-/// Receiver (live, `application/x-mpegURL`).
+/// Receiver (live, canonical content type).
+///
+/// The content type is `application/vnd.apple.mpegurl`, NOT the legacy
+/// `application/x-mpegURL`: the DMR's player-selection rejects the legacy
+/// type for a media/load from a custom sender — it fails to pick an HLS
+/// player and never fetches the manifest. Confirmed on-device 2026-08-16:
+/// the legacy type fetched nothing (only the cast logo), the canonical type
+/// played a 10-segment VOD end to end.
 pub fn send_load(device: &DeviceAddr, url: &str) -> Result<(), CastError> {
-    send_media_load(device, url, "application/x-mpegURL", StreamType::Live)
+    send_media_load(device, url, "application/vnd.apple.mpegurl", StreamType::Live)
 }
 
 /// Load a single static image onto `device` — the simplest possible cast:

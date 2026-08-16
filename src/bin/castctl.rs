@@ -34,7 +34,9 @@ fn main() -> ExitCode {
     let args: Vec<String> = env::args().collect();
 
     // Parse: [--image] [--type CT] <device-ip> <url>
-    let mut content_type = "application/x-mpegURL".to_string();
+    // Canonical HLS type by default — the DMR rejects the legacy
+    // application/x-mpegURL for a custom-sender LOAD (confirmed on-device).
+    let mut content_type = "application/vnd.apple.mpegurl".to_string();
     let mut ip: Option<String> = None;
     let mut url: Option<String> = None;
     let mut iter = args.iter().skip(1);

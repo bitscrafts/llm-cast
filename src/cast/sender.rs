@@ -60,12 +60,16 @@ impl Sender {
 
     /// Build the Cast v2 `media/load` request body: `"type": "LOAD"` plus the
     /// HLS media descriptor under `media`.
+    ///
+    /// `application/vnd.apple.mpegurl` (canonical) is required — the DMR
+    /// rejects the legacy `application/x-mpegURL` for a custom-sender LOAD and
+    /// never fetches the manifest (confirmed on-device 2026-08-16).
     pub fn build_media_load_request(url: &str) -> Value {
         serde_json::json!({
             "type": "LOAD",
             "media": {
                 "contentId": url,
-                "contentType": "application/x-mpegURL",
+                "contentType": "application/vnd.apple.mpegurl",
                 "streamType": "LIVE"
             }
         })
