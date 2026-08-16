@@ -5,6 +5,12 @@
 **Author**: pi agent (research-backed)
 **Date**: 2026-08-07
 **Depends-On**: none (research complete; see `docs/02-research/`, `docs/03-architecture/`)
+**Status**: SPECIFIED — AMENDED 2026-08-16 (exit-criterion 2 removed: it invoked a
+non-portable host path `/root/.pi/agent/skills/quality-gate/run.sh` with `|| true`
+— a rubber stamp that always passes — and duplicated the harness's own phase-3
+gate; exit-criterion 7 made fail-closed so missing module dirs fail instead of
+passing vacuously; parts 1-4 regrouped by build dependency, and the render module
+(R3), previously orphaned, is now assigned to Part 1)
 
 ---
 
@@ -122,12 +128,11 @@ pub struct Cell { pub ch: char, pub fg: Rgb, pub bg: Rgb, pub bold: bool }
 **CRITICAL**: Every criterion MUST be a shell command returning 0 on success.
 
 - [ ] `cargo test --test cast_tv_tests 2>&1 | grep -q "test result: ok"`
-- [ ] `bash /root/.pi/agent/skills/quality-gate/run.sh . 2>&1 | grep -q "PASS\|OK" || true`
 - [ ] `test -f src/capture/bridge.rs && test -f src/cast/sender.rs`
 - [ ] `grep -q "media/load" src/cast/sender.rs`
 - [ ] `grep -q "Access-Control-Allow-Origin" src/serve/server.rs`
 - [ ] `grep -qi "h264" src/encode/pipe.rs`
-- [ ] `! grep -rE '\.unwrap\(\)|\.expect\(' src/capture src/emu src/render src/encode src/serve src/cast 2>/dev/null | grep -v '//' | grep -v '#\[cfg\(test\)\]' | grep -v test`
+- [ ] `for d in src/capture src/emu src/render src/encode src/serve src/cast; do [ -d "$d" ] || exit 1; done && ! grep -rE '\.unwrap\(\)|\.expect\(' src/capture src/emu src/render src/encode src/serve src/cast 2>/dev/null | grep -v '//' | grep -v '#\[cfg\(test\)\]' | grep -v test`
 
 ---
 

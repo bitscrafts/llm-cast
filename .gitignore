@@ -3,6 +3,7 @@
 /_tmp/
 /.pidag/
 /.orchestration/*.bak-*
+/.claude/skills/**/*.bak-*
 /_tmp-*.log
 
 # Editor / OS noise

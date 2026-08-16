@@ -3,9 +3,34 @@
 **Status**: GREEN — spec-02 terminal cell damage tracker implemented, D2d
 semantics fixed and pinned, quality gate PASSED (fmt/check/clippy/test).
 **Date**: 2026-08-16
-**Phase**: 3 — spec-02 terminal cell damage tracker
+**Phase**: 4 — spec-01: terminal core (part 1) first dispatch
 
 ---
+
+## 2026-08-16 — spec-01: parts amended for first dispatch
+
+- **Orchestrator amended the specs** (specs are the orchestrator's — no pi work
+  has touched them):
+- Parent `01-cast-tv-terminal.md`: removed exit criterion 2 — it invoked the
+  non-portable host path `/root/.pi/agent/skills/quality-gate/run.sh` with
+  `|| true` (a rubber stamp that always passes) and duplicated the harness's own
+  phase-3 gate. Made criterion 7 fail-closed: missing module dirs now FAIL the
+  sweep instead of passing vacuously.
+- `part1` REWRITTEN: the original had an empty TDD Contract (it would have
+  dispatched nothing) and the render module (R3) was orphaned — no part assigned
+  it. Part 1 is now the **terminal core**: `emu/term.rs`
+  (`alacritty_terminal::vte::Perform` grid, R2) + `render/raster.rs`
+  (grid→RGB via the existing `render/font::FONT8X8_BASIC`, R3), with
+  full-first-then-diff via the existing `damage::DamageTracker` (R7). Four tests
+  = parent tests 1–4. **No new dependency**: vte is re-exported by
+  alacritty_terminal 0.24 (`pub use vte;`).
+- `part2` = capture bridge (R1) + cast sender (R6); `part3` = serve (R5) + encode
+  (R4); both pinned to compile under `cargo test` **default features**
+  (rust_cast/gstreamer are optional deps — the real integrations sit behind
+  `cfg`; the Cast `media/load` payload and an injected-discovery error path make
+  the sender tests run without a device or a feature). `part4` = full 10-test
+  suite + fail-closed no-unwrap sweep (R8–R11).
+- **Next**: dispatch `pi-workhorse.sh run specs/01-cast-tv-terminal-part1.md`.
 
 ## 2026-08-16 (second session) — spec-02 gate GREEN; D2d fixed post-amendment
 
