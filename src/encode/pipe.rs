@@ -181,8 +181,15 @@ impl Drop for GstEncoder {
 /// Build the real GStreamer pipeline:
 ///
 /// ```text
-/// appsrc ... ! videoconvert ! {x264enc ... | vaapih264enc} ! hlssink2 ...
+/// appsrc ... ! videoconvert ! video/x-raw,format=I420 ! {x264enc ... | vaapih264enc} ! h264parse config-interval=-1 ! hlssink2 ...
 /// ```
+///
+/// `video/x-raw,format=I420` forces 4:2:0 into x264 (RGBA would otherwise
+/// negotiate a 4:4:4 YUV and produce an undecodable-on-Chromecast "High 4:4:4"
+/// stream), and `h264parse config-interval=-1` repeats SPS/PPS before every
+/// IDR frame, so a player joining mid-stream (the live playlist's window has
+/// rotated past the stream-start headers) still receives parameter sets and
+/// can decode.
 ///
 /// `hlssink2` (gst-plugins-bad — there is no `hlsmux` element, the part-4
 /// sketch was wrong) writes ~1 s H.264 segments into
@@ -205,13 +212,23 @@ pub fn build_pipeline(
     let enc = match encoder {
         "vaapi" => "vaapih264enc".to_string(),
         _ => {
-            "x264enc tune=zerolatency speed-preset=veryfast bitrate=800 key-int-max=30".to_string()
+            // The I420 caps filter (below) is what matters: without it,
+            // videoconvert feeds x264 a 4:4:4 YUV (from the RGBA source) and
+            // the stream encodes as "High 4:4:4" — which Chromecast's
+            // hardware decoder cannot decode (it wants 4:2:0). Confirmed via
+            // gst-launch tag: H.264 (High 4:4:4 Profile). x264 follows the
+            // input chroma, so forced I420 -> 4:2:0 (Main/High 4:2:0), which
+            // Chromecast decodes. (This x264enc has no `profile` property.)
+            "x264enc tune=zerolatency speed-preset=veryfast bitrate=800 \
+             key-int-max=30"
+                .to_string()
         }
     };
     let launch = format!(
         "appsrc name=src format=time is-live=true do-timestamp=true \
          caps=\"video/x-raw,format=RGBA,width={width},height={height},framerate={fps}/1\" \
-         ! videoconvert ! {enc} \
+         ! videoconvert ! video/x-raw,format=I420 ! {enc} \
+         ! h264parse config-interval=-1 \
          ! hlssink2 location={outdir}/segment/seg_%05d.ts \
                     playlist-location={outdir}/live.m3u8 \
                     target-duration=1 max-files=30 playlist-root={root}"

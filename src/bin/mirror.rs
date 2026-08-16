@@ -230,7 +230,15 @@ fn main() -> ExitCode {
                 return ExitCode::FAILURE;
             }
         };
-        Pipeline::new(bridge, gst, PipelineConfig::default())
+        // Keepalive cadence = one frame per declared FPS: when the pane is
+        // static the coordinator still submits the last screen at this rate,
+        // so the HLS timeline stays continuous (10 fps) instead of collapsing
+        // to a 1 fps gap-every-second stream that the player can't sustain.
+        let config = PipelineConfig {
+            keepalive_ms: 1000 / FPS as u64,
+            ..Default::default()
+        };
+        Pipeline::new(bridge, gst, config)
     };
 
     #[cfg(not(feature = "gstreamer"))]
