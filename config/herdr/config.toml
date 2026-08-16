@@ -1,0 +1,101 @@
+onboarding = false
+# herdr configuration for the chromecast-tv-mirror TV display
+# Agent-aware terminal multiplexer for AI coding agents
+# https://github.com/herdrdev/herdr
+#
+# PROJECT-OWNED copy: this is the config the tv-demo display stack is
+# launched with (via HERDR_CONFIG_PATH), NOT the user's personal
+# ~/.config/herdr/config.toml. Kept in the repo so the TV setup is
+# reproducible and the operator's own herdr is never modified.
+
+# ---------------------------------------------------------------------------
+# Theme
+# ---------------------------------------------------------------------------
+[theme]
+name = "catppuccin"
+auto_switch = false  # Container doesn't have light/dark switching
+dark_name = "catppuccin"
+
+# ---------------------------------------------------------------------------
+# Keybindings (tmux-compatible)
+# ---------------------------------------------------------------------------
+[keys]
+# Prefix key (tmux default)
+prefix = "ctrl+b"
+
+# Vim-style pane navigation (no prefix needed)
+focus_pane_left = "ctrl+h"
+focus_pane_down = "ctrl+j"
+focus_pane_up = "ctrl+k"
+focus_pane_right = "ctrl+l"
+
+# Split panes (tmux-style)
+split_vertical = "prefix+%"
+split_horizontal = 'prefix+"'
+
+# Tab/window management
+new_tab = "prefix+c"
+
+# ---------------------------------------------------------------------------
+# UI Settings
+# ---------------------------------------------------------------------------
+[ui]
+# Mouse support
+mouse_capture = true
+
+# Right sidebar (Agent/Space panel) — pinned narrow for the TV display
+# (auto-scales from sidebar_width; max_width caps it — was 26)
+# Collapsed to the compact numbers/dots rail; "hidden" = zero width.
+sidebar_width = 10
+sidebar_min_width = 8
+sidebar_max_width = 10
+sidebar_start_collapsed = true
+sidebar_collapsed_mode = "compact"
+
+# Notification sound settings for agents
+[ui.sound]
+enabled = false  # Disable sounds in container
+
+[ui.sound.agents]
+# Configure per-agent sounds (all off for container)
+# Keys are the serde field names of AgentSoundOverrides (herdr 0.8.0):
+# pi, claude, codex, gemini, cursor, devin, agy, cline, open_code,
+# github_copilot, kimi, kiro, droid, amp, grok, hermes, kilo, qodercli, maki.
+# Values: "default", "on", or "off".
+pi = "off"
+claude = "off"
+codex = "off"
+gemini = "off"
+cursor = "off"
+open_code = "off"
+
+# ---------------------------------------------------------------------------
+# Session Settings
+# ---------------------------------------------------------------------------
+[session]
+# Resume agent panes on restore
+resume_agents_on_restore = true
+
+# ---------------------------------------------------------------------------
+# Terminal Settings
+# ---------------------------------------------------------------------------
+[terminal]
+# Shell mode for new panes
+shell_mode = "non_login"
+
+# Default shell
+default_shell = "/bin/bash"
+
+# ---------------------------------------------------------------------------
+# Advanced Settings
+# ---------------------------------------------------------------------------
+[advanced]
+# Scrollback buffer (10MB default, good for agent output)
+scrollback_limit_bytes = 10485760
+
+# ---------------------------------------------------------------------------
+# Experimental Features
+# ---------------------------------------------------------------------------
+[experimental]
+# Persist pane history for session recovery
+pane_history = true

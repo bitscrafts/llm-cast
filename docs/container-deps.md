@@ -98,4 +98,53 @@ container-IP forward **cannot work**. Only two mechanisms bridge the container:
 > and kills your own SSH session (exit 144). Kill in a separate invocation, or
 > use a non-self-matching regex like `1808[0]`.
 
+## herdr (TV display muxer) — binary in image, config + launch in repo
+
+**Binary:** already baked into the container image at
+`/usr/local/share/binaries/herdr` and copied to `/root/.local/bin/herdr` by
+`/usr/local/bin/entrypoint.sh` on first run (same mechanism as `claude`,
+`pi`, `llama-server`). Nothing to add to the container file for the binary.
+`herdr --version` → 0.8.0 (stable channel). Self-update via `herdr update`
+(run outside a herdr session, as the update requires stopping sessions).
+
+**TV display config is PROJECT-OWNED, not the operator's config.** The
+operator's personal `~/.config/herdr/config.toml` must NOT be edited for the
+TV — the tv-demo display runs its own herdr session with the repo's config via
+`HERDR_CONFIG_PATH`:
+
+```bash
+# repo: config/herdr/config.toml  (sidebar pinned narrow + collapsed for TV)
+export HERDR_CONFIG_PATH=/projects/chromecast-tv-mirror/config/herdr/config.toml
+```
+
+Key values that make the TV readable (verified 2026-08-16):
+- `[ui] sidebar_width = 10`, `sidebar_min_width = 8`, `sidebar_max_width = 10`
+  — pins the right Agent/Space panel to a thin rail.
+- `sidebar_start_collapsed = true` + `sidebar_collapsed_mode = "compact"`
+  — collapses to the numbers/dots rail. **Takes effect on the NEXT SERVER
+  LAUNCH** (not a client reload), so the tv-demo server must be restarted.
+- Widths are ALSO runtime state in `session.json` (`sidebar_width`,
+  `collapsed_space_keys`); the client re-persists its auto-scaled width, so
+  config-only edits can be clobbered. The collapsed server launch writes the
+  desired state.
+
+**Launch procedure** — `scripts/tv-demo-up.sh` (repo). It restarts ONLY the
+tv-demo herdr server + display client + pane programs, stripping the parent
+`HERDR_*` env (nested-herdr guard) and pointing both at `HERDR_CONFIG_PATH`.
+Xvfb :99, ffmpeg x11grab→HLS, hls_server.py :18080 and the reverse tunnel are
+assumed already running (see below) and are NOT touched:
+
+```bash
+bash /projects/chromecast-tv-mirror/scripts/tv-demo-up.sh
+```
+
+Important: after any tv-demo server restart the pane commands die (htop /
+`watch lsof` are not restored from session.json); the script relaunches them
+via `herdr pane run w1:p1 htop` + `herdr pane run w1:p2 'watch -n 2 lsof -i'`.
+A stale-restored pane renders at its old width and looks "cut" — relaunching
+at the current pane width fixes it (the shrunken sidebar widened the pane, so
+old frames ended ~22 cols short).
+
+---
+
 <!-- More installs get appended here as the milestone-2 run needs them. -->
