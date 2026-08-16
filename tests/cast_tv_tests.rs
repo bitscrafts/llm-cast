@@ -1,8 +1,10 @@
-//! Integration tests for the terminal cell damage tracker (spec-02).
+//! Integration tests for cast-tv-terminal (spec-01 / spec-02).
 //!
-//! The tracker is pure and dependency-free: no terminal types, no rendering,
-//! no I/O. Given the previous and current contents of a grid, it says which
-//! cells changed.
+//! The first block covers the cell damage tracker (spec-02), which is pure
+//! and dependency-free: no terminal types, no rendering, no I/O. Given the
+//! previous and current contents of a grid, it says which cells changed.
+//! Later blocks cover spec-01 parts 1-3: the vte emulator, the rasterizer,
+//! the capture bridge, the cast sender, and the HLS server.
 
 use cast_tv_terminal::damage::{CellContent, CellKey, DamageTracker};
 
@@ -428,4 +430,85 @@ fn test_sender_reports_unreachable() {
         Err(CastError::Unreachable(_)) => {}
         other => panic!("expected CastError::Unreachable, got {other:?}"),
     }
+}
+
+// ===========================================================================
+// spec-01 part 3 (R5 HLS server + CORS, R4 H.264 encode module)
+// ===========================================================================
+//
+// TDD Contract tests (parent tests 5 and 6) — written before the server
+// existed. A raw HTTP/1.1 GET over a TcpStream stands in for the
+// Default Media Receiver's fetch, so no client dependency is needed.
+
+use cast_tv_terminal::serve::server;
+use std::collections::HashMap;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::net::{TcpListener, TcpStream};
+
+/// One raw HTTP/1.1 GET with an `Origin` header (as a browser/Chromecast
+/// sender would send). Returns (status, lowercased-header map, body).
+async fn raw_get(addr: &str, path: &str) -> (u16, HashMap<String, String>, Vec<u8>) {
+    let mut stream = TcpStream::connect(addr).await.unwrap();
+    let request = format!(
+        "GET {path} HTTP/1.1\r\nHost: {addr}\r\nOrigin: http://tv.local\r\nConnection: close\r\n\r\n"
+    );
+    stream.write_all(request.as_bytes()).await.unwrap();
+
+    let mut response = Vec::new();
+    stream.read_to_end(&mut response).await.unwrap();
+
+    let head_end = response.windows(4).position(|w| w == b"\r\n\r\n").unwrap();
+    let head = String::from_utf8_lossy(&response[..head_end]);
+    let mut lines = head.lines();
+    let status: u16 = lines
+        .next()
+        .unwrap()
+        .split_whitespace()
+        .nth(1)
+        .unwrap()
+        .parse()
+        .unwrap();
+    let headers: HashMap<String, String> = lines
+        .filter_map(|line| line.split_once(':'))
+        .map(|(name, value)| (name.trim().to_ascii_lowercase(), value.trim().to_string()))
+        .collect();
+    (status, headers, response[head_end + 4..].to_vec())
+}
+
+/// Boot the real HLS router on an ephemeral port; returns its address.
+async fn spawn_server() -> String {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap().to_string();
+    tokio::spawn(async move {
+        axum::serve(listener, server::app()).await.unwrap();
+    });
+    addr
+}
+
+/// T5 (R5) — GET /live.m3u8: HTTP 200, `Access-Control-Allow-Origin`
+/// present, and a real playlist body. Without CORS the receiver cannot read
+/// the stream cross-origin, so this is the seam the cast depends on.
+#[tokio::test]
+async fn test_hls_playlist_has_cors() {
+    let addr = spawn_server().await;
+    let (status, headers, body) = raw_get(&addr, "/live.m3u8").await;
+
+    assert_eq!(status, 200);
+    assert!(
+        headers.contains_key("access-control-allow-origin"),
+        "response must carry Access-Control-Allow-Origin, got headers {headers:?}"
+    );
+    assert!(body.starts_with(b"#EXTM3U"), "playlist body must be HLS");
+}
+
+/// T6 (R5) — GET a segment path: HTTP 200 and a non-empty body carrying
+/// exactly the segment bytes the server publishes.
+#[tokio::test]
+async fn test_served_segment_bytes() {
+    let addr = spawn_server().await;
+    let (status, _headers, body) = raw_get(&addr, "/segment/seg0.ts").await;
+
+    assert_eq!(status, 200);
+    assert!(!body.is_empty(), "segment body must not be empty");
+    assert_eq!(body, server::SEGMENT_BYTES);
 }
