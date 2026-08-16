@@ -1,0 +1,22 @@
+{
+  "provider": "deepseek",
+  "model": "deepseek-v4-flash",
+  "enabled_models": [
+    "deepseek-v4-flash",
+    "deepseek-v4-pro",
+    "claude-sonnet-4*",
+    "claude-sonnet-5*",
+    "claude-opus-4*",
+    "claude-haiku-4*",
+    "gemini-2.5*",
+    "gemini-3*",
+    "glm-5.2:cloud",
+    "kimi-k2.7-code:cloud",
+    "deepseek-v4-flash:cloud",
+    "nvidia/*",
+    "laguna-local/*"
+  ],
+  "tools": ["read", "bash", "edit", "write", "grep", "find", "ls"],
+  "maxToolIterations": 50,
+  "requestTimeoutSecs": 300
+}

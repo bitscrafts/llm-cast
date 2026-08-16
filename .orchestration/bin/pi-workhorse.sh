@@ -56,7 +56,10 @@ resolve_orch_home() {
 ORCH_HOME="$(resolve_orch_home)"
 [ -f "$ORCH_HOME/config.env" ] && . "$ORCH_HOME/config.env"
 
-PI="${PI_BIN:-$(command -v pi || echo /root/.local/bin/pi)}"
+# pi must be resolvable from the environment: PATH, or PI_BIN. No hardcoded
+# fallback path -- this bundle must be replicable on any host.
+PI="${PI_BIN:-$(command -v pi 2>/dev/null || true)}"
+[ -n "$PI" ] || { echo "pi-workhorse: pi not found on PATH and PI_BIN is unset — install pi or set PI_BIN" >&2; exit 2; }
 DIRECTIVES="$ORCH_HOME/pi/DIRECTIVES.md"
 
 CMD="${1:-}"

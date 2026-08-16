@@ -2,9 +2,7 @@
 
 - **Project**: `/abs/path`
 - **Priority**: <why now, in one clause>
-- **Status**: SPECIFIED — not yet dispatched · *(lifecycle: SPECIFIED → IN PROGRESS
-  on dispatch → IMPLEMENTED — awaiting review → DONE after the orchestrator
-  commits and updates HANDOFF.md)*
+- **Status**: SPECIFIED — not yet dispatched
 - **Source**: <what prompted this: audit finding, defect, plan item>
 - **Depends-On**: <specs that must land first, or "none">
 
@@ -65,13 +63,8 @@ version be written first and its failure pasted.>
 
 - [ ] `<runnable command>` — <what it proves> (R1)
 - [ ] `<runnable command>` — <what it proves> (R2)
-- [ ] `cargo test` — the whole suite, including any declared `[[test]]` target (N3)
-- [ ] `cargo clippy -- -D warnings` — clean
-- [ ] `cargo fmt -- --check` — formatted
-- [ ] `git diff --quiet -- <forbidden path>` — that path must stay untouched (N1)
-- [ ] `! git diff --name-only | grep -qE '<forbidden pattern>'` — general negative
-      check. The `!` is mandatory: a bare `grep -q` exits 0 when the pattern is
-      FOUND, so the validator reports PASS on a violated guard (fail-open).
+- [ ] `<quality gate command>` exits 0
+- [ ] `git diff --name-only | grep -q '<forbidden path>'` finds nothing
 
 **Prose criteria**:
 
