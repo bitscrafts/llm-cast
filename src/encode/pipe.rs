@@ -91,6 +91,14 @@ pub struct GstEncoder {
     pipeline: gstreamer::Pipeline,
     appsrc: gstreamer_app::AppSrc,
     url: String,
+    /// Zero-based frame counter: the presentation timeline of the stream.
+    /// HLS wants PTS starting at ~0; the wall clock (do-timestamp) would stamp
+    /// the first frame at container uptime (here ~3769 s), which the
+    /// Chromecast's native player does not accept — it plays a frame or two
+    /// then errors back to the idle screen.
+    frame_idx: u64,
+    /// Encode framerate — each frame advances PTS by 1e9/`fps` ns.
+    fps: u32,
 }
 
 #[cfg(feature = "gstreamer")]
@@ -121,6 +129,8 @@ impl GstEncoder {
             pipeline,
             appsrc,
             url,
+            frame_idx: 0,
+            fps,
         })
     }
 }
@@ -144,11 +154,19 @@ impl Encode for GstEncoder {
             )));
         }
 
-        // appsrc is `format=time is-live=true do-timestamp=true` (set in the
-        // launch string): do-timestamp stamps PTS+DTS from the pipeline clock,
-        // so the muxed TS carries real-time timestamps. Setting PTS manually
-        // would fight the clock — the DTS diverges from the PTS and the
-        // segments carry inconsistent timestamps.
+        // Timeline: a zero-based frame counter, NOT the pipeline clock. With
+        // `do-timestamp` the first buffer is stamped at container uptime
+        // (~3769 s here), which Chromecast's native player rejects after a
+        // frame or two. PTS/DTS advance by 1e9/fps ns per frame so the muxed
+        // TS carries a clean t=0 timeline like a normal HLS live stream.
+        let pts_ns = self
+            .frame_idx
+            .checked_mul(1_000_000_000)
+            .and_then(|v| v.checked_div(self.fps as u64))
+            .ok_or_else(|| EncodeError::Buffer("pts overflow".to_string()))?;
+        self.frame_idx += 1;
+        let pts = gstreamer::ClockTime::from_nseconds(pts_ns);
+
         let mut buffer =
             gstreamer::Buffer::with_size(expected).map_err(|e| EncodeError::Gst(e.to_string()))?;
         {
@@ -157,6 +175,8 @@ impl Encode for GstEncoder {
                 .ok_or_else(|| EncodeError::Gst("buffer not writable".to_string()))?;
             buf.copy_from_slice(0, &rgba[..expected])
                 .map_err(|_| EncodeError::Gst("buffer copy failed".to_string()))?;
+            buf.set_pts(Some(pts));
+            buf.set_dts(Some(pts));
         }
 
         self.appsrc
@@ -225,7 +245,7 @@ pub fn build_pipeline(
         }
     };
     let launch = format!(
-        "appsrc name=src format=time is-live=true do-timestamp=true \
+        "appsrc name=src format=time is-live=true \
          caps=\"video/x-raw,format=RGBA,width={width},height={height},framerate={fps}/1\" \
          ! videoconvert ! video/x-raw,format=I420 ! {enc} \
          ! h264parse config-interval=-1 \

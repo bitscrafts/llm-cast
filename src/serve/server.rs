@@ -24,10 +24,20 @@ pub const CORS_ALLOW_ORIGIN: &str = "Access-Control-Allow-Origin";
 
 /// GET /live.m3u8 — the live HLS playlist from the store, or 404 before the
 /// encoder has published anything.
+///
+/// RFC 8216 §6.2.1: a live Media Playlist "MUST NOT be cached" — the player
+/// re-fetches it to discover new segments at the live edge, and a stale copy
+/// makes it play the segments it already has and then buffer forever. The
+/// `Cache-Control: no-cache` header (plus `Expires: 0`) tells every cache and
+/// the Chromecast's own HTTP stack to revalidate on each poll.
 async fn playlist(State(store): State<Arc<dyn MediaStore>>) -> Response {
     match store.playlist() {
         Some(text) => (
-            [(header::CONTENT_TYPE, "application/vnd.apple.mpegurl")],
+            [
+                (header::CONTENT_TYPE, "application/vnd.apple.mpegurl"),
+                (header::CACHE_CONTROL, "no-cache"),
+                (header::EXPIRES, "0"),
+            ],
             text,
         )
             .into_response(),
@@ -38,7 +48,14 @@ async fn playlist(State(store): State<Arc<dyn MediaStore>>) -> Response {
 /// GET /segment/<name> — one HLS media segment from the store, or 404.
 async fn segment(Path(name): Path<String>, State(store): State<Arc<dyn MediaStore>>) -> Response {
     match store.segment(&name) {
-        Some(bytes) => ([(header::CONTENT_TYPE, "video/mp2t")], bytes).into_response(),
+        Some(bytes) => (
+            [
+                (header::CONTENT_TYPE, "video/mp2t"),
+                (header::CACHE_CONTROL, "no-cache"),
+            ],
+            bytes,
+        )
+            .into_response(),
         None => StatusCode::NOT_FOUND.into_response(),
     }
 }

@@ -8,17 +8,17 @@
 use std::str::FromStr;
 
 use rust_cast::channels::media::{Media, StreamType};
-use rust_cast::channels::receiver::CastDeviceApp;
+use rust_cast::channels::receiver::{Application, CastDeviceApp};
 use rust_cast::CastDevice;
 
 use super::sender::{CastError, DeviceAddr};
 
-/// Connect to `device` and load the HLS `url` onto it via the Default Media
-/// Receiver.
-///
-/// Every `rust_cast::Error` is mapped to [`CastError::Session`] — the session
-/// never panics.
-pub fn send_load(device: &DeviceAddr, url: &str) -> Result<(), CastError> {
+/// Connect to `device` over TLS and launch the Default Media Receiver, wiring
+/// the connection + heartbeat channels and the app transport (the DMR's media
+/// controller only accepts media commands on a connected transport — without
+/// this the LOAD is silently dropped). Every `rust_cast::Error` is mapped to
+/// [`CastError::Session`]; the session never panics.
+fn connect_and_launch(device: &DeviceAddr) -> Result<(CastDevice, Application), CastError> {
     // 1. TLS connect. Chromecast certs are self-signed, so host verification
     //    is disabled — `connect_without_host_verification` is expected here.
     let cast_device = CastDevice::connect_without_host_verification(&device.host, device.port)
@@ -42,15 +42,22 @@ pub fn send_load(device: &DeviceAddr, url: &str) -> Result<(), CastError> {
         .launch_app(&app)
         .map_err(|e| CastError::Session(format!("launch CC1AD845: {e}")))?;
 
-    // 2b. Establish the app's transport connection — the DMR's media
-    //     controller only accepts media commands on a connected transport.
-    //     Verified against rust_cast's canonical example: launch_app ->
-    //     connection.connect(transport_id) -> media.load. Without this step
-    //     the LOAD is silently dropped and load() never gets a STATUS back.
+    // 2b. Establish the app's transport connection — verified against
+    //     rust_cast's canonical example: launch_app ->
+    //     connection.connect(transport_id) -> media.load.
     cast_device
         .connection
         .connect(&application.transport_id)
         .map_err(|e| CastError::Session(format!("connect app transport: {e}")))?;
+
+    Ok((cast_device, application))
+}
+
+/// Connect to `device` and load the HLS `url` onto it via the Default Media
+/// Receiver. `stream_type` is [`StreamType::Live`] and the content type is
+/// `application/x-mpegURL` (the DMR's HLS player).
+pub fn send_load(device: &DeviceAddr, url: &str) -> Result<(), CastError> {
+    let (cast_device, application) = connect_and_launch(device)?;
 
     // 3. media/load — mirrors `Sender::build_media_load_request` (HLS, LIVE);
     //    rust_cast builds the wire message from these fields. The destination
@@ -66,5 +73,28 @@ pub fn send_load(device: &DeviceAddr, url: &str) -> Result<(), CastError> {
         .media
         .load(&application.transport_id, &application.session_id, &media)
         .map_err(|e| CastError::Session(format!("media load: {e}")))?;
+    Ok(())
+}
+
+/// Load a single static image onto `device` via the Default Media Receiver.
+/// The simplest possible cast — one fetch, no streaming, no playlist: the DMR
+/// renders the photo full-screen. Used as the ground-truth operator test that
+/// the cast leg (connect → launch → load) works end to end before any video.
+pub fn send_image_load(device: &DeviceAddr, url: &str) -> Result<(), CastError> {
+    let (cast_device, application) = connect_and_launch(device)?;
+
+    // media/load with `StreamType::None` (the device auto-selects) and the
+    // image MIME; no duration for a still.
+    let media = Media {
+        content_id: url.to_string(),
+        stream_type: StreamType::None,
+        content_type: "image/jpeg".to_string(),
+        metadata: None,
+        duration: None,
+    };
+    cast_device
+        .media
+        .load(&application.transport_id, &application.session_id, &media)
+        .map_err(|e| CastError::Session(format!("image load: {e}")))?;
     Ok(())
 }
