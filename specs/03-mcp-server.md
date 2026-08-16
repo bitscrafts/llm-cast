@@ -5,6 +5,11 @@
 - **Status**: SPECIFIED — not yet dispatched · *(lifecycle: SPECIFIED → IN PROGRESS
   on dispatch → IMPLEMENTED — awaiting review → DONE after the orchestrator
   commits and updates HANDOFF.md)*
+- **Split for dispatch (2026-08-16)**: implemented as three parts —
+  `03-mcp-server-part1.md` (mux core + mcp foundation + unit tests),
+  `03-mcp-server-part2.md` (server surface + bin), `03-mcp-server-part3.md`
+  (E2E + acceptance). This file remains the source of truth; the parts carry
+  the same requirements, R-numbers and guardrails, subset per part.
 - **Source**: operator requirement: MCP-over-stdio server so an AI agent controls the Chromecast + TV terminal stack; approved plan /root/.claude/plans/inherited-inventing-wren.md (2026-08-16)
 - **Depends-On**: spec-01 (reuses `src/cast` + the gate/test conventions), spec-02 (keeps the rustix `std` pin and the no-unwrap meta-test)
 
