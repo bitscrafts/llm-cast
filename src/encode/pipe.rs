@@ -244,14 +244,22 @@ pub fn build_pipeline(
                 .to_string()
         }
     };
+    // A silent AAC track is MANDATORY: the Chromecast Default Media Receiver
+    // refuses to play video-only HLS. On-device isolation test (2026-08-16):
+    // the same film with audio fetched every segment and played; video-only
+    // fetched nothing (VOD) or stalled after two segments (live). `hlssink2`
+    // exposes separate request pads — `hls.video` / `hls.audio` — so the two
+    // elementary streams are muxed to TS inside the element, no mpegtsmux.
     let launch = format!(
         "appsrc name=src format=time is-live=true \
          caps=\"video/x-raw,format=RGBA,width={width},height={height},framerate={fps}/1\" \
          ! videoconvert ! video/x-raw,format=I420 ! {enc} \
-         ! h264parse config-interval=-1 \
-         ! hlssink2 location={outdir}/segment/seg_%05d.ts \
-                    playlist-location={outdir}/live.m3u8 \
-                    target-duration=1 max-files=30 playlist-root={root}"
+         ! h264parse config-interval=-1 ! hls.video \
+         audiotestsrc is-live=true wave=silence ! audioconvert ! audioresample \
+         ! voaacenc bitrate=64000 ! aacparse ! hls.audio \
+         hlssink2 name=hls location={outdir}/segment/seg_%05d.ts \
+                  playlist-location={outdir}/live.m3u8 \
+                  target-duration=1 max-files=30 playlist-root={root}"
     );
     // gstreamer-rs 0.22 re-exports `parse_launch` as `parse::launch`.
     let element = gstreamer::parse::launch(&launch).map_err(|e| EncodeError::Gst(e.to_string()))?;
