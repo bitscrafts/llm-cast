@@ -1,14 +1,99 @@
 # HANDOFF — chromecast-tv-mirror
 
-**Status**: GREEN — spec-01 **all 5 parts done** + **milestone-1 device smoke
+**Status**: GREEN — spec-01 **all 6 parts done** + **milestone-1 device smoke
 test PASS** (2026-08-16): `castctl` on 10.10.10.208 loaded an HLS stream onto
 the Chromecast via rust_cast (DMR CC1AD845) and **Big Buck Bunny PLAYED on the
-TV**. Gate GREEN — 23/23 tests default, 22/22 with `--features cast`. rust_cast
-**CAN** `media_load` HLS — no pivot to Option 2.
+TV**. Part 6 (full pipeline) IMPLEMENTED: the `mirror` binary wires
+capture→emu→render→encode→serve→cast, dry-run verifiable in-container. Gate
+GREEN — 29/29 tests default, 28/28 with `--features cast`. rust_cast **CAN**
+`media_load` HLS — no pivot to Option 2.
 **Date**: 2026-08-16
-**Phase**: 8 — milestone-1 GREEN. spec-01 + smoke test complete. Next: full
-pipeline integration (gstreamer encode on a LAN-reachable host + rust_cast
-into the real herdr stream), then pidag (53 specs).
+**Phase**: 9 — part-6 IMPLEMENTED + phase-7 committed. Next: milestone-2 full
+pipeline operator test on a LAN-reachable host (gstreamer encode + live
+herdr/tmux pane onto the device), then pidag (53 specs).
+
+---
+
+## 2026-08-16 (part 6 session) — full pipeline integration; IMPLEMENTED + phase-7 committed
+
+### What was DONE this session
+- **TDD first**: appended 8 part-6 contract tests to `tests/cast_tv_tests.rs`
+  (suite now 29 = 27 sync + 2 async — a plain `grep "^fn test_"` counts 27 and
+  misses the async ones). `test_pipe_source_reads_available_bytes` (7 bytes,
+  EOF→0), `test_null_encoder_counts_frames` (3 submits, stream URL),
+  `test_pipeline_submits_changed_frames` / `_skips_unchanged_frames` /
+  `_keepalive_after_idle` (cadence: changed→submit, unchanged+pre-keepalive→
+  skip, idle past 1000 ms→exactly one keepalive frame), `test_dir_store_
+  reads_output_dir`, plus async `test_served_playlist_reads_from_store`
+  (AMENDS part-3's CORS/segment tests → store-driven, asserts 200 + CORS + 404)
+  and `test_serve_hls_binds_and_responds` (real `serve_hls` entry, HTTP 200).
+  Raw `TcpStream` GET (`raw_get`) — no dev-deps.
+- **`src/capture/pipe.rs`** (NEW, R1): `PipeSource` — reads a tmux/herdr
+  `pipe-pane` output file; a regular-file read never blocks and returns 0 at
+  EOF, so no `O_NONBLOCK`/libc dep is needed.
+- **`src/pipeline/`** (NEW): `PipelineConfig {keepalive_ms: 1000, tick_ms: 10}`,
+  `Pipeline<S: ByteSource, E: Encode>::poll_and_submit(now_ms)` — poll → diff →
+  rasterize (grid×8 RGBA) → `submit_frame`; skips unchanged frames before the
+  keepalive deadline, pushes one keepalive frame after. `run()` loops with
+  `tokio::signal::ctrl_c` shutdown; errors logged, never exit.
+- **`src/encode/pipe.rs`** (MODIFY, R4 rework): `Encode` trait;
+  `NullEncoder` (in-container, does NOT validate buffer size — the TDD test
+  feeds a 4-byte buffer for a claimed 8×8 canvas); `#[cfg(feature="gstreamer")]`
+  `GstEncoder` + `build_pipeline`: appsrc → videoconvert → x264enc/vaapih264enc
+  → **hlssink2** (NOT `hlsmux` — not an element name) → `seg_%05d.ts` +
+  `live.m3u8`, `playlist-root` for absolute segment URLs. Buffer-size validated,
+  PTS from running timestamp, `Drop` → State::Null.
+- **`src/serve/store.rs`** (NEW, R5): `MediaStore {playlist, segment}`;
+  `MapStore` (in-memory, seeded — tests + dry-run) and `DirStore` (production,
+  reads hlssink2 output dir, traversal guard rejects `/ \ ..`).
+- **`src/serve/server.rs`** (MODIFY): store-driven `app(Arc<dyn MediaStore>)` —
+  `/live.m3u8` + `/segment/:name`, 404 on None, CORS any-origin; `serve_hls`
+  runs `axum::serve`.
+- **`src/bin/mirror.rs`** (NEW): operator binary — `--source` (required),
+  `--bind A:P`, `--size WxH` (160×45), `--outdir`, `--encoder x264|vaapi`,
+  `--device IP`, `--url-base`, `--no-cast`; `--help` → usage, exit 0; usage
+  errors → exit 2; wildcard-bind + device without `--url-base` → exit 2.
+  Default features: `MapStore::seeded` placeholder + `NullEncoder` = dry-run
+  (`curl http://127.0.0.1:8080/live.m3u8` → 200). gstreamer feature: `DirStore`
+  + `GstEncoder`, creates outdir/segment, ROOT = url-base minus `/live.m3u8`
+  plus `/segment`. `cast_to` once, non-fatal (R11).
+
+### ORCHESTRATOR phase-7 fix — real runtime bug the gate/review missed
+- `mirror` **panicked at runtime** on `tokio::net::TcpListener::from_std` of a
+  listener bound OUTSIDE the runtime ("Registering a blocking socket with the
+  tokio runtime is unsupported"). Second latent bug under it: after
+  `rt.spawn(serve_hls)`, the sync `pipeline.run()` blocked the main thread, so
+  the runtime was never polled again — the server would never have served.
+  Fix: bind with `tokio::net::TcpListener::bind` INSIDE the runtime
+  (`rt.block_on`), and drive `pipeline.run()` on its own std thread while the
+  main thread `rt.block_on`s `ctrl_c`. Verified end-to-end: `curl` → 200 + CORS,
+  SIGINT → graceful exit 0. Unit tests did not catch this because they drive
+  the server inside a test runtime; the binary's runtime topology is only
+  exercised by running it.
+- **Spec amendment**: TDD row `test_pipe_source_reads_available_bytes`
+  said "returns 5" for `b"hi\x1b[31m"` (7 bytes) — corrected to 7 to keep spec
+  ↔ code truthful.
+
+### Outcome — independent orchestrator re-verification
+- `cargo test` default: **29/29 pass**; `cargo test --features cast`:
+  **28/28** (device-address test gated off — its contract is default-only).
+- `mirror --help` exit 0; dry-run `mirror --source <pane> --bind 127.0.0.1:18080`
+  → GET /live.m3u8 200 (playlist), /segment/seg0.ts 200, `access-control-allow-
+  origin: *`, SIGINT exit 0.
+- Workhorse gate (fmt/check/clippy/test) GREEN, review PASS (static), validate
+  8/8, all exit criteria green. Committed **`a40e4f8`** (orchestrator phase 7:
+  implementation + fix + spec amendment).
+
+### Next steps
+- **Milestone-2 operator test on a LAN-reachable host**: build with
+  `--features cast,gstreamer`, then
+  `mirror --source <herdr/tmux pipe-pane file> --bind 0.0.0.0:8080 --outdir
+  <dir> --url-base http://<LAN-IP>:8080/live.m3u8 --device 10.10.10.208`
+  — live pane should appear on the TV.
+- Then pidag (53 specs).
+
+
+---
 
 ---
 
