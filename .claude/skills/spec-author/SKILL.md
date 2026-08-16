@@ -75,9 +75,17 @@ dependency, the pinned fixture hash unchanged.
 
 **The command must exit 0 when the criterion is SATISFIED.** This is the trap:
 a check that should find nothing must be written `! grep -q pattern path`. A
-bare `grep -q` exits 1 when it finds nothing, so the validator reports FAIL on a
-passing project. Three of the first nine criteria run through
+bare `grep -q` exits 1 when it finds nothing, so the validator reports FAIL on
+a passing project. Three of the first nine criteria run through
 `lib/validate-exit-criteria.sh` were wrong this way.
+
+**A test-filter criterion that matches zero tests passes vacuously.** `cargo
+test --quiet <filter>` on a filter that matches nothing still prints
+`test result: ok. 0 passed; 0 filtered out` — so a criterion that greps for
+`test result: ok` is green before the tests exist. Require a non-zero count:
+`cargo test --quiet <filter> 2>&1 | grep -qE "^test result: ok\. [1-9]"`.
+(Found in the field: spec-04's week/round-trip criteria passed on an
+unimplemented crate for exactly this reason.)
 
 The first backticked span on the line is the command. Put it first.
 
