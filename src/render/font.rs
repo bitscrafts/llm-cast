@@ -1,5 +1,8 @@
 // Generated from src/font8x8_basic.h (public domain, VGA-derived; Hepper/Sondaar/IBM).
-// MSB of each byte = leftmost pixel column of the glyph row.
+// Bit 0 (LSB) of each byte = leftmost pixel column of the glyph row — the
+// Hepper font8x8_basic rendering convention (`(byte >> col) & 1` with col 0
+// leftmost). The rasterizer must read LSB-first; reading MSB-first mirrors
+// every glyph.
 pub const FONT8X8_BASIC: [[u8; 8]; 128] = [
     [0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00],
     [0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00],

@@ -2,8 +2,9 @@
 //!
 //! Paints the canvas directly (byte writes, no tiny-skia): each cell is an
 //! 8×8 tile, background-filled then glyph-stamped from
-//! [`crate::render::font::FONT8X8_BASIC`] (MSB = leftmost pixel column of
-//! each glyph row), tinted with the cell fg. A `full` frame repaints every
+//! [`crate::render::font::FONT8X8_BASIC`] (bit 0 = leftmost pixel column of
+//! each glyph row — Hepper's font8x8_basic convention), tinted with the
+//! cell fg. A `full` frame repaints every
 //! tile; a diff frame repaints only the tiles listed in `frame.cells`, so
 //! the caller's buffer is left untouched elsewhere.
 
@@ -53,7 +54,11 @@ fn paint_tile(buffer: &mut [u8], stride: usize, col: usize, row: usize, cell: &C
     };
     for (gy, bits) in glyph.iter().enumerate() {
         for gx in 0..TILE {
-            if bits & (0x80 >> gx) != 0 {
+            // Bit 0 = leftmost pixel: Hepper's font8x8_basic stores each glyph
+            // row with the leftmost column in the LSB, so gx=0 reads bit 0.
+            // (Reading MSB-first — 0x80 >> gx — flips every glyph horizontally:
+            // milestone-2 operator-test finding, 2026-08-16.)
+            if bits & (1 << gx) != 0 {
                 let i = (y0 + gy) * stride + (x0 + gx) * 4;
                 buffer[i] = cell.fg.r;
                 buffer[i + 1] = cell.fg.g;

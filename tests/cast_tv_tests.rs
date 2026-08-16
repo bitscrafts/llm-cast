@@ -336,11 +336,13 @@ fn test_rasterize_grid_to_buffer() {
         }
     }
 
-    // The glyph ('X' = 0x58) stamps only its set bits, tinted fg.
+    // The glyph ('X' = 0x58) stamps only its set bits, tinted fg. Hepper's
+    // font8x8_basic stores bit 0 = leftmost pixel, so the rasterizer reads
+    // LSB-first (1 << gx); MSB-first would mirror the glyph.
     let glyph = FONT8X8_BASIC['X' as usize];
     for (gy, bits) in glyph.iter().enumerate() {
         for gx in 0..8 {
-            let set = bits & (0x80 >> gx) != 0;
+            let set = bits & (1 << gx) != 0;
             let expect = if set {
                 [255, 0, 0, 255]
             } else {
