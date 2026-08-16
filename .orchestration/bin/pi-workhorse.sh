@@ -232,6 +232,12 @@ FAIL if any requirement is unimplemented or any test was weakened."
     SELF="$HERE/pi-workhorse.sh"
     rounds="${ORCH_MAX_REPAIR_ROUNDS:-2}"
 
+    # Isolate this run's usage numbers from earlier runs of the same spec:
+    # baseline whatever sessions already exist, so each phase's usage line is
+    # that phase's own cost and the task total is this run's, not lifetime.
+    sd_run="$(session_dir_for "$ROOT" "$SPEC")"
+    bash "$ORCH_HOME/lib/usage.sh" "$sd_run" "" --clear >/dev/null 2>&1 || true
+
     echo "== phase 2: implement =="
     imp_log="$ROOT/_tmp/pi-implement.$$.log"
     mkdir -p "$(dirname "$imp_log")"
@@ -306,7 +312,7 @@ FAIL if any requirement is unimplemented or any test was weakened."
     echo
     echo "== task total =="
     [ -x "$ORCH_HOME/lib/usage.sh" ] && bash "$ORCH_HOME/lib/usage.sh" \
-        "$ROOT/_tmp/pi-sessions/$(basename "$SPEC" .md)" "TOTAL"
+        "$ROOT/_tmp/pi-sessions/$(basename "$SPEC" .md)" "TOTAL" --total
     echo
     echo "PHASES 2-6 COMPLETE. Phase 7 is yours:"
     echo "  read the load-bearing diff, confirm the architecture, then commit."
