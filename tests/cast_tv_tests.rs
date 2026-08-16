@@ -512,3 +512,86 @@ async fn test_served_segment_bytes() {
     assert!(!body.is_empty(), "segment body must not be empty");
     assert_eq!(body, server::SEGMENT_BYTES);
 }
+
+// ===========================================================================
+// spec-01 part 4 (R8-R11 closing sweep) — no production unwraps
+// ===========================================================================
+
+use std::path::PathBuf;
+
+/// R8 — no production file under the six module dirs may call `.unwrap()` or
+/// `.expect()` on a non-test, non-comment line. Panic points in a pipeline
+/// that must degrade safely are forbidden.
+#[test]
+fn test_no_production_unwrap() {
+    let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let module_dirs = [
+        "src/capture",
+        "src/emu",
+        "src/render",
+        "src/encode",
+        "src/serve",
+        "src/cast",
+    ];
+
+    let mut checked = 0usize;
+    let mut checked_dirs: Vec<String> = Vec::new();
+    let mut offenders: Vec<(String, usize, String)> = Vec::new();
+    let mut missing_dirs: Vec<String> = Vec::new();
+
+    for dir in module_dirs {
+        let path = manifest.join(dir);
+        if !path.is_dir() {
+            missing_dirs.push(dir.to_string());
+            continue;
+        }
+        for entry in std::fs::read_dir(&path).expect("read_dir must succeed") {
+            let entry = entry.expect("dir entry must be readable");
+            let file_path = entry.path();
+            if file_path.extension().map(|e| e == "rs").unwrap_or(false) {
+                let content = std::fs::read_to_string(&file_path).expect("source must be readable");
+                // Find every `.unwrap()`/`.expect()` call, rejecting lines
+                // that are blank or comments (doc comments included).
+                for (lineno, line) in content.lines().enumerate() {
+                    let trimmed = line.trim();
+                    if trimmed.is_empty() || trimmed.starts_with("//") {
+                        continue;
+                    }
+                    if trimmed.contains(".unwrap()") || trimmed.contains(".expect()") {
+                        offenders.push((
+                            file_path
+                                .strip_prefix(&manifest)
+                                .unwrap_or(&file_path)
+                                .display()
+                                .to_string(),
+                            lineno + 1,
+                            trimmed.to_string(),
+                        ));
+                    }
+                }
+                checked += 1;
+                if !checked_dirs.contains(&dir.to_string()) {
+                    checked_dirs.push(dir.to_string());
+                }
+            }
+        }
+    }
+
+    assert!(
+        !missing_dirs.is_empty() || checked > 0,
+        "no module dirs found to check; the walk must not pass vacuously"
+    );
+    assert!(
+        missing_dirs.is_empty(),
+        "production module dirs missing: {missing_dirs:?}"
+    );
+    assert_eq!(
+        checked_dirs.len(),
+        6,
+        "all six module dirs must have been walked, got {checked_dirs:?}"
+    );
+    assert!(
+        offenders.is_empty(),
+        "production code must not call .unwrap()/.expect(), found: {offenders:?}"
+    );
+}
