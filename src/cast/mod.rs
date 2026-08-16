@@ -3,4 +3,7 @@
 
 pub mod sender;
 
-pub use sender::{CastError, Sender};
+#[cfg(feature = "cast")]
+pub mod session;
+
+pub use sender::{CastError, DeviceAddr, Sender};

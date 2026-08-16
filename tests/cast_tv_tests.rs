@@ -363,7 +363,7 @@ fn test_rasterize_grid_to_buffer() {
 // ===========================================================================
 
 use cast_tv_terminal::capture::bridge::{Bridge, BridgeError, ByteSource};
-use cast_tv_terminal::cast::{CastError, Sender};
+use cast_tv_terminal::cast::{CastError, DeviceAddr, Sender};
 
 /// In-memory byte source: hands out the whole payload in one read, then EOF.
 struct FakeByteSource {
@@ -430,6 +430,30 @@ fn test_sender_reports_unreachable() {
         Err(CastError::Unreachable(_)) => {}
         other => panic!("expected CastError::Unreachable, got {other:?}"),
     }
+}
+
+/// R6 — an injected discovery that yields a device address composes the
+/// amended seam end-to-end: under default features the rust_cast session is
+/// compiled out, so `send_load(url)` returns `Ok(())` with no network
+/// touched.
+#[test]
+fn test_sender_accepts_device_address() {
+    let mut sender = Sender::new(Box::new(|| {
+        Ok(DeviceAddr {
+            host: "192.168.1.50".into(),
+            port: 8009,
+        })
+    }));
+    let result = sender.send_load("http://tv:8080/live.m3u8");
+    assert!(result.is_ok());
+}
+
+/// R6 — `DeviceAddr::new` pins the standard Chromecast port 8009.
+#[test]
+fn test_device_addr_default_port() {
+    let addr = DeviceAddr::new("10.0.0.5");
+    assert_eq!(addr.port, 8009);
+    assert_eq!(addr.host, "10.0.0.5");
 }
 
 // ===========================================================================
