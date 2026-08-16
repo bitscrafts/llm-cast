@@ -436,7 +436,14 @@ fn test_sender_reports_unreachable() {
 /// amended seam end-to-end: under default features the rust_cast session is
 /// compiled out, so `send_load(url)` returns `Ok(())` with no network
 /// touched.
+///
+/// Default features ONLY: under `--features cast` the session is live, so an
+/// injected `Ok(DeviceAddr)` would trigger a real network connect to the fake
+/// address. The smoke-test remediation on 2026-08-16 gated this test to
+/// `#[cfg(not(feature = "cast"))]`; the live path is covered by the real
+/// device smoke test via `castctl`.
 #[test]
+#[cfg(not(feature = "cast"))]
 fn test_sender_accepts_device_address() {
     let mut sender = Sender::new(Box::new(|| {
         Ok(DeviceAddr {

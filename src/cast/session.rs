@@ -42,6 +42,16 @@ pub fn send_load(device: &DeviceAddr, url: &str) -> Result<(), CastError> {
         .launch_app(&app)
         .map_err(|e| CastError::Session(format!("launch CC1AD845: {e}")))?;
 
+    // 2b. Establish the app's transport connection — the DMR's media
+    //     controller only accepts media commands on a connected transport.
+    //     Verified against rust_cast's canonical example: launch_app ->
+    //     connection.connect(transport_id) -> media.load. Without this step
+    //     the LOAD is silently dropped and load() never gets a STATUS back.
+    cast_device
+        .connection
+        .connect(&application.transport_id)
+        .map_err(|e| CastError::Session(format!("connect app transport: {e}")))?;
+
     // 3. media/load — mirrors `Sender::build_media_load_request` (HLS, LIVE);
     //    rust_cast builds the wire message from these fields. The destination
     //    is the launched app's transport protocol (e.g. `web-1`).
