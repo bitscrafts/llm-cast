@@ -1,11 +1,72 @@
 # HANDOFF — chromecast-tv-mirror
 
-**Status**: GREEN — spec-02 implemented; **spec-01 parts 1 + 2 done** (part 1
-emu+render, part 2 capture+cast). Part 1 was recovered from an exit-7
-workhorse-commit violation; part 2 ran clean EXIT 0. Both: gate GREEN,
-review PASS, validate all-green.
+**Status**: GREEN — spec-01 **parts 1 + 2 + 3 done** (part 1 emu+render,
+part 2 capture+cast, part 3 serve+encode). Gate GREEN, all 20 tests pass,
+all 5 part-3 exit criteria pass. Part 4 (cast sender integration + encode
+integration) is next.
 **Date**: 2026-08-16
-**Phase**: 5 — spec-01: part 3 (serve + encode) next
+**Phase**: 5 — spec-01: part 4 (rust_cast media_load + encoder feed) next
+
+---
+
+## 2026-08-16 (part 3 session) — serve + encode implemented; gate GREEN
+
+### What was DONE this session
+- **TDD first**: appended the two part-3 contract tests (parent T5/T6) to
+  `tests/cast_tv_tests.rs` — `test_hls_playlist_has_cors`,
+  `test_served_segment_bytes`. Raw HTTP/1.1 GET over a `TcpStream`
+  (`Connection: close`, `Origin` header) stands in for the receiver's fetch —
+  no client dependency; server spawned via `TcpListener::bind("127.0.0.1:0")`
+  (bound before spawn ⇒ no race) + `axum::serve`.
+- **`src/serve/mod.rs`** (NEW): `pub mod server;`
+- **`src/serve/server.rs`** (NEW, R5): axum 0.7 router — GET `/live.m3u8`
+  (playlist const, `application/vnd.apple.mpegurl`) and GET `/segment/:name`
+  (static blob `SEGMENT_BYTES`, 404 for unknown names); CORS via
+  `CorsLayer::new().allow_origin(AllowOrigin::any())`; pub consts `PLAYLIST`,
+  `SEGMENT_BYTES`, `CORS_ALLOW_ORIGIN`; handlers return `Response`, never
+  panic.
+- **`src/encode/mod.rs`** (NEW): `pub mod pipe;`
+- **`src/encode/pipe.rs`** (NEW, R4): unconditional
+  `pub const H264_ENCODER: &str = "h264"`; real pipeline
+  (`build_pipeline`, appsrc → videoconvert → vaapih264enc → hlsmux) gated
+  behind `#[cfg(feature = "gstreamer")]`; errors via `Result<String>`, no
+  unwrap/expect/panic.
+- **`src/lib.rs`**: added `pub mod encode;` and `pub mod serve;`.
+
+### Bugs found during the TDD cycle (both mine, not the spec's)
+1. `CorsLayer::new()` in tower-http 0.5 defaults to NO allowed origins —
+   emits only `vary`, never `Access-Control-Allow-Origin`. Fix:
+   `.allow_origin(AllowOrigin::any())` (test caught it: header assert failed).
+2. axum 0.7.9 routes use matchit 0.7 ⇒ params are `:name`, NOT `{name}`
+   (the `{param}` syntax is axum 0.8/matchit 0.8). `/segment/{name}` 404'd
+   (literal match). Fix: `/segment/:name` (test caught it: 404 vs 200).
+
+### Outcome — gate GREEN
+```
+  cargo fmt --check            PASS
+  cargo check                  PASS
+  cargo clippy -D warnings     PASS
+  cargo test                   PASS
+QUALITY GATE: PASSED (rust)
+```
+`cargo test --test cast_tv_tests`: `test result: ok. 20 passed; 0 failed; 0
+ignored; 0 measured; 0 filtered out; finished in 0.01s` — both new tests
+`test_hls_playlist_has_cors ... ok`, `test_served_segment_bytes ... ok`.
+
+### Exit criteria — all 5 pass (EC1-EC5 all exit 0)
+- cargo test grep ok; both files exist; grep CORS header in server.rs; grep
+  -qi h264 in pipe.rs; no unwrap/expect in src/serve + src/encode.
+
+### Memory keys stored this session
+- `chromecast-tv-mirror/implementation/part3-hls-server` (0.8) — part-3
+  findings incl. the two gotchas above (CorsLayer::new() denies all origins;
+  axum 0.7 = matchit 0.7 = `:param` route syntax).
+
+### Next steps (part 4)
+- `specs/01-cast-tv-terminal-part4.md`: integrate rust_cast
+  `media_load` onto the device (cast feature) and feed encoder output into
+  the HLS server (gstreamer feature); both stay feature-gated for CI.
+
 
 ---
 
