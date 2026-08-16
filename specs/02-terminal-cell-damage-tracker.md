@@ -3,8 +3,8 @@
 - **Project**: `/projects/chromecast-tv-mirror`
 - **Priority**: the crate does not build its test target, and every frame path
   needs this to avoid redrawing the whole grid.
-- **Status**: SPECIFIED — AMENDED 2026-08-16 (permit rustix std pin after
-  upstream-defect discovery) · IN PROGRESS
+- **Status**: SPECIFIED — AMENDED 2026-08-16 (rustix std pin; duplicate-key
+  reporting pinned by D2d) · IN PROGRESS
 - **Source**: `HANDOFF.md` — "No public damage API in 0.24.2 → own diff via
   HashMap of last cells" (2026-08-14)
 - **Depends-On**: none
@@ -39,6 +39,14 @@ baseline — the missing-test-file resolution error aborted before dependency
 compilation. The only fix is forcing `std` on the already-present
 `rustix 0.38.44`; this amendment permits exactly that pin (N1/G3). No NEW
 dependency is introduced.
+
+**AMENDED 2026-08-16 (second)** — the review phase caught a spec-silent edge
+case in the first implementation. With `previous = {K: 'a'}` and a call
+`[(K, 'a'), (K, 'b')]`, the first (unchanged) occurrence marked K seen, so the
+changed later occurrence was never reported — a cell whose final content
+differs from the previous call, left silently stale. The error-handling note
+now pins the semantics (damage is judged on the *final* per-key value, not on
+each occurrence) and D2d locks it with a test.
 
 ---
 
@@ -116,6 +124,7 @@ explicitly out of scope.
 | D2a | `test_changed_char_is_damaged` | one cell's `ch` changes | exactly that key |
 | D2b | `test_changed_colour_is_damaged` | one cell's `fg` changes | exactly that key |
 | D2c | `test_new_key_is_damaged` | a 4th cell appears | exactly the new key |
+| D2d | `test_duplicate_last_occurrence_change_is_damaged` | previous stores `'a'` at K; call `[(K,'a'),(K,'b')]` | K reported exactly once — the final `'b'` differs from the previous `'a'` |
 | D5a | `test_removed_key_is_not_damaged` | a cell disappears | empty result |
 | D5b | `test_reappearing_key_is_damaged` | cell removed, then returns | that key damaged. **The acceptance test** |
 | D6 | `test_order_is_deterministic` | 20 cells across rows/cols, changed | sorted row desc, col asc; identical across two runs |
@@ -167,7 +176,11 @@ together if removed keys are genuinely forgotten.
 ### Error handling expectations
 
 `diff` takes a slice and returns a `Vec`; it has no failure mode and must not
-acquire one. Duplicate keys in a single call are last-write-wins, not a panic.
+acquire one. Duplicate keys in a single call are **last-write-wins**: the
+surviving stored value is the last occurrence, each key is reported at most
+once, and damage is judged by comparing the surviving (final) value against
+the previous call — an unchanged first occurrence must not mask a changed
+later one (D2d).
 
 ---
 
