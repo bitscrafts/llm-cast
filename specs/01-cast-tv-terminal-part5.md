@@ -7,7 +7,13 @@ part-2 stub's replacement), R11 (safe degrade), plus the `castctl` operator
 binary for the milestone-1 device smoke test.
 **Status**: SPECIFIED — WRITTEN 2026-08-16. Amends part-2's `Discovery` seam
 (was `Result<(), CastError>`; the real session has nothing to connect to —
-now `Result<DeviceAddr, CastError>`).
+now `Result<DeviceAddr, CastError>`). IMPLEMENTED 2026-08-16 — gate GREEN,
+review PASS, validate 5/5, EXIT 0, no exit-7 violation. The implement pass
+corrected three code-level API sketches (verified against rust_cast 0.17.0
+source — the notes said to verify, not guess): `CastDeviceApp::from_str`
+(no `From<&str>` impl); `DeviceAddr::new(ip.clone())` (FnMut E0507); and
+`media.load`'s destination is the launched app's `transport_id`, both args
+`&String`. Behavior contract unchanged.
 
 ## Overview
 

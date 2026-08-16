@@ -1,12 +1,96 @@
 # HANDOFF — chromecast-tv-mirror
 
-**Status**: GREEN — spec-01 **all 4 parts done** (part 1 emu+render, part 2
-capture+cast, part 3 serve+encode, part 4 closing sweep). Gate GREEN, all 21
-tests pass, all 4 part-4 exit criteria pass. The 10-test parent TDD contract
-is fully present and passing.
+**Status**: GREEN — spec-01 **all 5 parts done** (part 1 emu+render, part 2
+capture+cast, part 3 serve+encode, part 4 closing sweep, part 5 real
+rust_cast session + castctl). Gate GREEN, all 23 tests pass, all 5 part-5
+exit criteria pass. The 10-test parent TDD contract is fully present and
+passing.
 **Date**: 2026-08-16
-**Phase**: 6 — spec-01 complete; next: optional rust_cast/gstreamer feature
-integration (media_load onto device, encoder feed), or ADR on option 2
+**Phase**: 7 — spec-01 complete (incl. real cast session); next: operator
+runs the milestone-1 device smoke test (`castctl` built with `--features
+cast`), or ADR on option 2 if rust_cast cannot media_load HLS
+
+---
+
+## 2026-08-16 (part 5 session) — real rust_cast session + castctl; gate GREEN
+
+### What was DONE this session
+- **TDD first**: appended the two part-5 contract tests to
+  `tests/cast_tv_tests.rs` — `test_sender_accepts_device_address` (discovery
+  yields `Ok(DeviceAddr)` ⇒ `send_load` returns `Ok(())` under default
+  features, session compiled out, no network) and `test_device_addr_default_port`
+  (`DeviceAddr::new("10.0.0.5")` ⇒ port 8009, host kept). Existing
+  `test_sender_reports_unreachable` passes UNCHANGED (the always-Err closure
+  infers the amended result type). Also updated the `cast` import to include
+  `DeviceAddr`. 23/23 pass.
+- **`src/cast/sender.rs`** (MODIFY): added `DeviceAddr {host, port}` +
+  `DeviceAddr::new` (port 8009); amended `Discovery` to
+  `Box<dyn FnMut() -> Result<DeviceAddr, CastError>>`; `send_load` now takes
+  the discovered device, calls the session behind `#[cfg(feature = "cast")]`,
+  and silences the unused device under `#[cfg(not(feature = "cast"))]` with
+  `let _ = &device;` (clippy -D warnings stays green).
+- **`src/cast/session.rs`** (NEW, `#[cfg(feature = "cast")]`): real rust_cast
+  0.17.0 session verified against crate source — `CastDevice::
+  connect_without_host_verification` (self-signed certs expected) →
+  `connection.connect("receiver-0")` → `heartbeat.ping()` →
+  `CastDeviceApp::from_str("CC1AD845")` (rust_cast has NO `From<&str>` for
+  `CastDeviceApp`, only `FromStr` — the spec's `&"CC1AD845".into()` sketch
+  cannot compile as written) → `receiver.launch_app` → `media.load(
+  &application.transport_id, &application.session_id, &Media{content_id: url,
+  stream_type: Live, content_type: "application/x-mpegURL"})` — destination is
+  the launched app's transport protocol (e.g. `web-1`); `load`'s two args must
+  be the SAME string type (`&String`/`&str` unify). Every `rust_cast::Error`
+  mapped via `map_err` to `CastError::Session`; zero unwrap/expect.
+- **`src/cast/mod.rs`** (MODIFY): `pub use sender::{CastError, DeviceAddr,
+  Sender};` + `#[cfg(feature = "cast")] pub mod session;`.
+- **`src/bin/castctl.rs`** (NEW): `castctl <device-ip> <hls-url>` — builds
+  `Sender::new(Box::new(move || Ok(DeviceAddr::new(ip.clone()))))` (FnMut ⇒
+  clone inside the closure; the spec's literal `move || Ok(DeviceAddr::new(ip))`
+  does not compile — E0507), prints device+url under `cast` / the
+  "built without the cast feature — no session will be sent; rebuild with
+  --features cast" notice under default features, and exits non-zero on
+  failure (ExitCode, no unwrap/expect/panic). Manual check: `./target/debug/
+  castctl 10.10.10.208 http://tv:8080/live.m3u8` prints the notice, exit 1.
+- **No Cargo.toml changes** (rust_cast already an optional dep); `cargo check
+  --features cast` FINISHED cleanly (pkg-config/openssl present).
+
+### Outcome — gate GREEN (exit 0)
+```
+  cargo fmt --check            PASS
+  cargo check                  PASS
+  cargo clippy -D warnings     PASS
+  cargo test                   PASS
+QUALITY GATE: PASSED (rust)
+```
+Raw: `test result: ok. 23 passed; 0 failed; 0 ignored; 0 measured; 0
+filtered out; finished in 0.01s` (cast_tv_tests); 0/0 lib + 0/0 castctl bin.
+
+### Exit criteria — all 5 pass
+- EC1 cargo test grep ok; EC2 `cargo check --features cast` → Finished;
+- EC3 session.rs/sender.rs/castctl.rs exist; EC4 `CC1AD845` in session.rs;
+- EC5 no `.unwrap()`/`.expect()` in src/cast src/bin (grep exit 1 as
+  required).
+
+### Spec deviations (code-level, spec's own notes anticipated them)
+- `&"CC1AD845".into()` → `CastDeviceApp::from_str("CC1AD845")` (no From<&str>
+  impl in rust_cast 0.17.0).
+- `move || Ok(DeviceAddr::new(ip))` → `move || Ok(DeviceAddr::new(ip.clone()))`
+  (FnMut closure cannot move out of its capture).
+- `media.load(destination, ...)`: destination = `&application.transport_id`
+  (the launched app's protocol id), both args `&String`.
+
+### Memory keys stored this session
+- `chromecast-tv-mirror/implementation/part5-real-session` (0.8) — rust_cast
+  0.17.0 session flow verified from source; the two spec-sketch compile fixes
+  (FromStr vs Into; FnMut clone); media.load destination = transport_id.
+
+### Next steps
+- Operator: `cargo build --release --features cast` then
+  `castctl 10.10.10.208 http://<host>:8080/live.m3u8` — milestone-1 device
+  smoke test. If rust_cast cannot media_load HLS onto the device, STOP and
+  report for explicit Option-2 decision (pivot guardrail).
+- Later: feed real encoder output into the HLS server (gstreamer feature).
+
 
 ---
 
