@@ -279,6 +279,59 @@ fn test_subsequent_frames_are_diff() {
     assert_eq!(frame.positions[0], (2, 0));
 }
 
+/// T3b — CHA (CSI `n G`) moves the cursor horizontally without touching the
+/// row, so text lands at an absolute column (ncurses optimization — htop
+/// uses it for every field).
+#[test]
+fn test_cha_moves_column_only() {
+    let mut emu = Emulator::with_size(8, 3);
+    let frame = emu.parse_bytes(b"\x1b[6GX");
+    assert_eq!(frame.cells[5].ch, 'X'); // 1-based col 6 = index 5
+    assert_eq!(frame.cells[0].ch, ' '); // col 1 untouched
+}
+
+/// T3c — VPA (CSI `n d`) moves the cursor vertically without touching the
+/// column (htop's other single-axis positioning primitive).
+#[test]
+fn test_vpa_moves_row_only() {
+    let mut emu = Emulator::with_size(8, 3);
+    let frame = emu.parse_bytes(b"\x1b[3dX");
+    assert_eq!(frame.cells[2 * 8].ch, 'X'); // 1-based row 3 = index 2
+}
+
+/// T3d — CNL (CSI `n E`) moves down n rows to column 0; CPL (CSI `n F`)
+/// moves back up.
+#[test]
+fn test_cnl_cpl() {
+    let mut emu = Emulator::with_size(4, 4);
+    let frame = emu.parse_bytes(b"\x1b[2EX\x1b[2FX");
+    assert_eq!(frame.cells[2 * 4].ch, 'X'); // CNL 2 → row 2, col 0
+    assert_eq!(frame.cells[0].ch, 'X'); // CPL 2 → row 0, col 0
+}
+
+/// T3e — EL (CSI `K`): mode 2 blanks the whole current line.
+#[test]
+fn test_el_erases_line() {
+    // 8 wide so "abcd" doesn't wrap the cursor to row 1 (the erase targets
+    // the cursor's row, exactly like a real terminal).
+    let mut emu = Emulator::with_size(8, 2);
+    let frame = emu.parse_bytes(b"abcd\x1b[2K");
+    for c in &frame.cells[0..8] {
+        assert_eq!(c.ch, ' ');
+    }
+}
+
+/// T3f — ED (CSI `J`): mode 2 blanks the whole grid (the startup
+/// `\x1b[H\x1b[2J` sequence every full-screen app emits).
+#[test]
+fn test_ed_erases_display() {
+    let mut emu = Emulator::with_size(3, 2);
+    let frame = emu.parse_bytes(b"abcdef\x1b[2J");
+    for c in &frame.cells {
+        assert_eq!(c.ch, ' ');
+    }
+}
+
 /// T4 — rasterize a 2×2 grid with known fg/bg and one non-space glyph: the
 /// buffer is exactly `width*8 * height*8 * 4` RGBA bytes, bg fills every
 /// tile, and glyph pixels are tinted fg.

@@ -274,6 +274,79 @@ impl Emulator {
         self.col = (col - 1).min(self.width - 1);
     }
 
+    /// CHA (CSI `n G`): move the cursor to column n, 1-based (0 or absent = 1);
+    /// the row is unchanged. Clamps to the grid edge, like CUP.
+    fn cha(&mut self, params: &vte::Params) {
+        let col = params.iter().next().and_then(|p| p.first()).copied().unwrap_or(1);
+        let col = if col == 0 { 1 } else { col };
+        self.col = (col - 1).min(self.width - 1);
+    }
+
+    /// VPA (CSI `n d`): move the cursor to row n, 1-based (0 or absent = 1);
+    /// the column is unchanged. Clamps to the grid edge, like CUP.
+    fn vpa(&mut self, params: &vte::Params) {
+        let row = params.iter().next().and_then(|p| p.first()).copied().unwrap_or(1);
+        let row = if row == 0 { 1 } else { row };
+        self.row = (row - 1).min(self.height - 1);
+    }
+
+    /// CNL (CSI `n E`): move down n rows (n defaults to 1), column 0. At the
+    /// bottom edge the cursor clamps instead of scrolling — htop never relies
+    /// on the scroll there.
+    fn cnl(&mut self, params: &vte::Params) {
+        let n = params.iter().next().and_then(|p| p.first()).copied().unwrap_or(1);
+        self.row = (self.row + n.max(1)).min(self.height - 1);
+        self.col = 0;
+    }
+
+    /// CPL (CSI `n F`): move up n rows (n defaults to 1), column 0.
+    fn cpl(&mut self, params: &vte::Params) {
+        let n = params.iter().next().and_then(|p| p.first()).copied().unwrap_or(1);
+        self.row = self.row.saturating_sub(n.max(1));
+        self.col = 0;
+    }
+
+    /// ED (CSI `n J`): erase the display. Mode 0 = cursor→end, 1 =
+    /// start→cursor, 2/3 = whole grid. The cursor does not move. Blanked
+    /// cells reset to default (matching ncurses clear-with-current-bg for the
+    /// default black background).
+    fn ed(&mut self, params: &vte::Params) {
+        let mode = params.iter().next().and_then(|p| p.first()).copied().unwrap_or(0);
+        let width = self.width as usize;
+        let total = width * self.height as usize;
+        let cursor = self.row as usize * width + self.col as usize;
+        match mode {
+            0 => self.blank(cursor, total),
+            1 => self.blank(0, cursor + 1),
+            _ => self.blank(0, total), // 2 and 3
+        }
+    }
+
+    /// EL (CSI `n K`): erase the current line. Mode 0 = cursor→EOL, 1 =
+    /// BOL→cursor, 2 = whole line. The cursor does not move.
+    fn el(&mut self, params: &vte::Params) {
+        let mode = params.iter().next().and_then(|p| p.first()).copied().unwrap_or(0);
+        let width = self.width as usize;
+        let row_start = self.row as usize * width;
+        let c = self.col as usize;
+        match mode {
+            0 => self.blank(row_start + c, row_start + width),
+            1 => self.blank(row_start, row_start + c + 1),
+            _ => self.blank(row_start, row_start + width),
+        }
+    }
+
+    /// Overwrite `grid[start..end)` with default (blank) cells. Never panics:
+    /// indices are clamped to the grid length.
+    fn blank(&mut self, start: usize, end: usize) {
+        let len = self.grid.len();
+        let start = start.min(len);
+        let end = end.min(len);
+        for cell in self.grid.iter_mut().skip(start).take(end.saturating_sub(start)) {
+            *cell = Cell::default();
+        }
+    }
+
     /// SGR (CSI `... m`): fg/bg color and bold. Unknown codes are ignored;
     /// out-of-range indices fall through to the `_` arm — never panic.
     fn sgr(&mut self, params: &vte::Params) {
@@ -364,6 +437,15 @@ impl Perform for Emulator {
         match action {
             'H' | 'f' => self.cup(params),
             'm' => self.sgr(params),
+            // Cursor motion / erase used by ncurses apps (htop) for their
+            // full-screen redraws. Missing these left real panes "messy":
+            // text landed at the wrong cell and stale glyphs survived.
+            'G' => self.cha(params),
+            'd' => self.vpa(params),
+            'E' => self.cnl(params),
+            'F' => self.cpl(params),
+            'J' => self.ed(params),
+            'K' => self.el(params),
             _ => {}
         }
     }
