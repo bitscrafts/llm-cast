@@ -40,8 +40,11 @@ for f in bin/pi-workhorse.sh lib/quality-gate.sh lib/validate-exit-criteria.sh; 
 done
 
 # Every skill named in backticks after the word "skill" must be installed.
+# Three places a skill can live: the orchestrator's skills dir, pi's user-wide
+# skills dir, and the bundle's own pi/skills (passed to pi via --skill at
+# runtime). A reference to pi's implementer/reviewer resolves to the last.
 echo "  cross-references:"
-for dir in "$CSK" "$PSK"; do
+for dir in "$CSK" "$PSK" "$ORCH/pi/skills"; do
     [ -d "$dir" ] || continue
     for sk in "$dir"/*/SKILL.md; do
         [ -f "$sk" ] || continue
@@ -60,7 +63,8 @@ for dir in "$CSK" "$PSK"; do
             # "validate-exit-criteria" here, which hid the fact that two skills
             # were calling bundled SCRIPTS "skills" -- a check softened to
             # accommodate a defect keeps the defect invisible.
-            if [ -f "$CSK/$r/SKILL.md" ] || [ -f "$PSK/$r/SKILL.md" ]; then
+            if [ -f "$CSK/$r/SKILL.md" ] || [ -f "$PSK/$r/SKILL.md" ] \
+                || [ -f "$ORCH/pi/skills/$r/SKILL.md" ]; then
                 ok "$name -> $r"
             else
                 fail "$name references skill '$r' which is not installed"

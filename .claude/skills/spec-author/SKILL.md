@@ -65,6 +65,16 @@ The structure comes from `templates/spec-template.md` via that script, so every
 spec has the same six sections in the same order. You fill content only. Refuses
 to overwrite: a spec is a contract, not a scratch file.
 
+## When the spec is too large — split it
+
+A spec whose "Files to Modify" spans more than one implement-gate cycle will
+not fail loudly on the workhorse; it will stall and hand off. If the harness
+exited 6, a workhorse pass stalled on it, or you cannot confidently say one
+pass can write the code and pass the gate, invoke the `spec-split` skill before
+delegating. Splitting is a first-class step in this workflow, not a workaround
+for a big task: each part leaves a green tree, each is independently
+reviewable and committable, and the parts are dispatched strictly in order.
+
 ## Exit criteria must be machine-checkable
 
 Every requirement needs a criterion, and no criterion may be subjective. "Code
