@@ -3,11 +3,19 @@
 **Parent-Spec**: `01-cast-tv-terminal.md`
 **Part**: 1 of 4
 **Covers**: R2 (vte parse → grid), R3 (rasterize), R7 (full-first-then-diff)
-**Status**: SPECIFIED — REWRITTEN 2026-08-16. The original Part 1 had an empty
-TDD Contract and covered only meta exit criteria (whole-suite pass, quality
-gate) — it would have dispatched nothing. This part now builds the terminal
-core — emulator grid + rasterizer — which every later part consumes. It also
-adopts the render module (R3), which the original 4 parts never assigned.
+**Status**: SPECIFIED — REWRITTEN 2026-08-16, AMENDED 2026-08-16 (after the
+implement pass). The original Part 1 had an empty TDD Contract and covered only
+meta exit criteria (whole-suite pass, quality gate) — it would have dispatched
+nothing. This part now builds the terminal core — emulator grid + rasterizer —
+which every later part consumes. It also adopts the render module (R3), which
+the original 4 parts never assigned. Amendment: `ScreenFrame.positions` is now
+part of the contract — a diff frame as originally pinned carried no cell
+coordinates, yet R7's rasterizer must paint only the damaged tiles. The
+implement pass added `positions: Vec<(u16, u16)>` parallel to `cells`
+(`(col, row)`, row 0 = top); this amendment pins that as the contract. Also
+corrected: the pre-existing `src/render/font.rs` did NOT compile (a closing
+`]` typo on the last glyph row) despite the earlier "compile-checked" claim;
+that typo is fixed, table data unchanged.
 
 ## Overview
 
@@ -49,8 +57,10 @@ src/
 └── lib.rs             MODIFY: add `pub mod emu;` and `pub mod render;`
 ```
 
-`src/render/font.rs` and `src/font8x8_basic.h` already exist and compile-checked
-in earlier work. Reuse `render::font::FONT8X8_BASIC`; do not regenerate it.
+`src/render/font.rs` and `src/font8x8_basic.h` already exist. Reuse
+`render::font::FONT8X8_BASIC`; do not regenerate it. (Note: a pre-existing
+closing-`]` typo on the last glyph row meant the module did NOT compile; that
+one-char fix landed during the part-1 implement pass, table data unchanged.)
 
 ## Key Data Structures (owned by this part)
 
@@ -66,8 +76,12 @@ pub struct Cell { pub ch: char, pub fg: Rgb, pub bg: Rgb, pub bold: bool }
 pub struct ScreenFrame {
     pub width: u16,
     pub height: u16,
-    pub cells: Vec<Cell>,   // all cells when full; only changed cells otherwise
-    pub full: bool,         // true on the first frame; false on later diffs
+    pub cells: Vec<Cell>,      // all cells when full; only changed cells otherwise
+    /// `(col, row)` per entry of `cells`, parallel to it; row 0 = top visible
+    /// row. Required because a diff frame carries only changed cells, and the
+    /// rasterizer must know where to paint each one.
+    pub positions: Vec<(u16, u16)>,
+    pub full: bool,            // true on the first frame; false on later diffs
 }
 ```
 
