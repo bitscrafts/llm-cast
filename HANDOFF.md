@@ -7,6 +7,54 @@ semantics fixed and pinned, quality gate PASSED (fmt/check/clippy/test).
 
 ---
 
+## 2026-08-16 (third session) — spec-01 part1 implemented; gate GREEN
+
+### What was DONE this session
+- **TDD first**: appended the four part-1 contract tests to
+  `tests/cast_tv_tests.rs` (T1 `test_vte_parses_ansi_into_grid`,
+  T2 `test_first_frame_is_full`, T3 `test_subsequent_frames_are_diff`,
+  T4 `test_rasterize_grid_to_buffer`). Confirmed red (E0432: no `emu` module)
+  before any production code.
+- **`src/emu/mod.rs`** (NEW): `pub mod term; pub use term::{Cell, Rgb, ScreenFrame};`
+- **`src/emu/term.rs`** (NEW): `Emulator::new/with_size/parse_bytes`; `impl Perform`
+  via `alacritty_terminal::vte` (vte 0.13.1, no new dep) handling `print`,
+  C0 CR/LF/BS/HT, CSI CUP (`H`/`f`) + SGR (fg 30-37/90-97, bg 40-47/100-107,
+  bold 1/22, reset 0); grid row-major, defaults fg 192,192,192 / bg 0,0,0
+  (documented); frames diffed through the existing `damage::DamageTracker`
+  (fresh tracker ⇒ first frame `full == true`); out-of-range SGR codes are
+  no-ops, never panic.
+- **`src/render/mod.rs`** (NEW) + **`src/render/raster.rs`** (NEW):
+  `rasterize(frame, buffer)` — direct byte writes (no tiny-skia): each cell =
+  8×8 tile, bg fill + `FONT8X8_BASIC` glyph stamp (MSB = leftmost column),
+  fg-tinted; short buffer ⇒ no-op (never panic).
+- **`src/lib.rs`**: added `pub mod emu;` and `pub mod render;`.
+- **`src/render/font.rs`**: fixed ONE pre-existing typo — last glyph row
+  (U+007F, index 127) ended `...0x00}` instead of `...0x00]`, so the module
+  did NOT compile despite the spec's claim it was "compile-checked". No table
+  data changed (still 128 entries).
+- **`src/emu/term.rs` clippy fixes**: `repeat_n` (manual-repeat-n) and a
+  `collapsible_match` guard on `b'\x08'`; then `cargo fmt` on tests.
+
+### Outcome — gate GREEN
+- `quality-gate.sh` → fmt PASS, check PASS, clippy PASS, test PASS,
+  `QUALITY GATE: PASSED (rust)`.
+- Raw test result: `test result: ok. 15 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out` (11 damage-tracker + 4 new part-1).
+- All 5 part-1 exit criteria pass (test ok; 4 files exist; `impl Perform`;
+  `FONT8X8_BASIC` in raster.rs; no unwrap/expect in src/emu, src/render).
+
+### Spec gaps found (reported; worked around minimally)
+1. **`ScreenFrame` as pinned cannot express diff positions**: `cells: Vec<Cell>`
+   has no coordinates, yet R7 + the rasterizer require painting only damaged
+   tiles. Added `pub positions: Vec<(u16, u16)>` parallel to `cells`
+   (`(col, row)`, row 0 = top). All four contract tests pass unchanged.
+2. **`src/render/font.rs` did not compile** (typo above) despite the spec's
+   "compile-checked" claim — one-char fix, table untouched.
+
+### What REMAINS (next agent)
+1. Part 2: capture bridge (R1) + cast sender (R6) — pinned to default features.
+2. Part 3: serve (R5) + encode (R4); Part 4: full 10-test suite + no-unwrap sweep.
+3. Milestone-1 device smoke test (operator): rust_cast media_load an HLS URL.
+
 ## 2026-08-16 — spec-01: parts amended for first dispatch
 
 - **Orchestrator amended the specs** (specs are the orchestrator's — no pi work

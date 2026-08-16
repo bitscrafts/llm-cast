@@ -2,3 +2,5 @@
 //! Chromecast (Default Media Receiver + HLS).
 
 pub mod damage;
+pub mod emu;
+pub mod render;

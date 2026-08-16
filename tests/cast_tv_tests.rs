@@ -220,3 +220,138 @@ fn test_duplicate_key_last_write_wins() {
     let surviving = vec![cell(0, 0, 'b')];
     assert_eq!(tracker.diff(&surviving), Vec::new());
 }
+
+// ---------------------------------------------------------------------------
+// spec 01 part 1 (R2/R3/R7): vte parser → grid, rasterizer.
+// TDD Contract tests — written before the emulator/rasterizer existed.
+// ---------------------------------------------------------------------------
+
+use cast_tv_terminal::emu::term::{Emulator, DEFAULT_FG};
+use cast_tv_terminal::emu::{Cell, Rgb, ScreenFrame};
+use cast_tv_terminal::render::font::FONT8X8_BASIC;
+use cast_tv_terminal::render::raster::rasterize;
+
+/// T1 — `"\x1b[31mX\x1b[0mY"`: SGR red paints X red, SGR reset returns Y to
+/// the default fg; neither cell is bold.
+#[test]
+fn test_vte_parses_ansi_into_grid() {
+    let mut emu = Emulator::with_size(3, 2);
+    let frame = emu.parse_bytes(b"\x1b[31mX\x1b[0mY");
+
+    assert!(frame.full);
+    assert_eq!(frame.cells.len(), 3 * 2);
+
+    let x = frame.cells[0];
+    assert_eq!(x.ch, 'X');
+    assert_eq!(x.fg, Rgb { r: 255, g: 0, b: 0 });
+    assert!(!x.bold);
+
+    let y = frame.cells[1];
+    assert_eq!(y.ch, 'Y');
+    assert_eq!(y.fg, DEFAULT_FG);
+    assert!(!y.bold);
+}
+
+/// T2 — the first `parse_bytes` on a fresh emulator returns a full frame:
+/// `full == true` and `cells.len() == width * height`.
+#[test]
+fn test_first_frame_is_full() {
+    let mut emu = Emulator::with_size(3, 2);
+    let frame = emu.parse_bytes(b"abc");
+
+    assert!(frame.full);
+    assert_eq!(frame.cells.len(), 3 * 2);
+}
+
+/// T3 — after a first call, a later call that changes a single cell yields a
+/// diff frame: `full == false` and `cells` holds exactly that changed cell.
+#[test]
+fn test_subsequent_frames_are_diff() {
+    let mut emu = Emulator::with_size(4, 2);
+    let _ = emu.parse_bytes(b"abcd"); // region: row 0, cols 0..=3
+    let frame = emu.parse_bytes(b"abXd"); // only col 2 changes
+
+    assert!(!frame.full);
+    assert_eq!(frame.cells.len(), 1);
+    assert_eq!(frame.cells[0].ch, 'X');
+    assert_eq!(frame.positions[0], (2, 0));
+}
+
+/// T4 — rasterize a 2×2 grid with known fg/bg and one non-space glyph: the
+/// buffer is exactly `width*8 * height*8 * 4` RGBA bytes, bg fills every
+/// tile, and glyph pixels are tinted fg.
+#[test]
+fn test_rasterize_grid_to_buffer() {
+    let fg = Rgb { r: 255, g: 0, b: 0 };
+    let bg = Rgb {
+        r: 10,
+        g: 20,
+        b: 30,
+    };
+    let blank = Cell {
+        ch: ' ',
+        fg,
+        bg,
+        bold: false,
+    };
+    let frame = ScreenFrame {
+        width: 2,
+        height: 2,
+        cells: vec![
+            Cell {
+                ch: 'X',
+                fg,
+                bg,
+                bold: false,
+            },
+            blank,
+            blank,
+            blank,
+        ],
+        positions: vec![(0, 0), (1, 0), (0, 1), (1, 1)],
+        full: true,
+    };
+
+    let w = 2 * 8;
+    let h = 2 * 8;
+    let mut buffer = vec![0u8; w * h * 4];
+    rasterize(&frame, &mut buffer);
+
+    assert_eq!(buffer.len(), w * h * 4);
+
+    let px = |x: usize, y: usize| &buffer[(y * w + x) * 4..(y * w + x) * 4 + 4];
+
+    // Every pixel is exactly fg or bg, opaque — nothing else.
+    for y in 0..h {
+        for x in 0..w {
+            let p = px(x, y);
+            let is_fg = p == [255, 0, 0, 255];
+            let is_bg = p == [10, 20, 30, 255];
+            assert!(
+                is_fg || is_bg,
+                "pixel ({x},{y}) = {p:?} is neither fg nor bg"
+            );
+        }
+    }
+
+    // The glyph ('X' = 0x58) stamps only its set bits, tinted fg.
+    let glyph = FONT8X8_BASIC['X' as usize];
+    for (gy, bits) in glyph.iter().enumerate() {
+        for gx in 0..8 {
+            let set = bits & (0x80 >> gx) != 0;
+            let expect = if set {
+                [255, 0, 0, 255]
+            } else {
+                [10, 20, 30, 255]
+            };
+            assert_eq!(px(gx, gy), &expect, "glyph pixel ({gx},{gy})");
+        }
+    }
+
+    // A full frame leaves no tile unpainted: the far tile is all bg.
+    for y in 8..h {
+        for x in 8..w {
+            assert_eq!(px(x, y), &[10, 20, 30, 255]);
+        }
+    }
+}
