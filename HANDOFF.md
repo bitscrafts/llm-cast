@@ -1,11 +1,11 @@
 # HANDOFF — chromecast-tv-mirror
 
-**Status**: GREEN — spec-02 implemented; **spec-01 part 1 (emu + render) done**:
-gate GREEN, review PASS, validate 5/5. Implemented by pi via the harness;
-the loop stopped on the new exit-7 no-commit check (pi committed two doc
-files), the orchestrator unwound and re-ran phases 3/5/6.
+**Status**: GREEN — spec-02 implemented; **spec-01 parts 1 + 2 done** (part 1
+emu+render, part 2 capture+cast). Part 1 was recovered from an exit-7
+workhorse-commit violation; part 2 ran clean EXIT 0. Both: gate GREEN,
+review PASS, validate all-green.
 **Date**: 2026-08-16
-**Phase**: 5 — spec-01: part 2 (capture + cast) next
+**Phase**: 5 — spec-01: part 3 (serve + encode) next
 
 ---
 
@@ -251,3 +251,38 @@ process ended; `sdd` driver (PID 617491) still idle.
 - Fix Bug A (validation-failure → pass failure text to next implement iter) and Bug B
   (quality-gate honesty). Re-run the DAG to confirm the worker then converges.
 - Re-run `pidag sdd specs/01-cast-tv-terminal.md --run` after pidag fixes; worker may then write files.
+
+---
+
+## 2026-08-16 — Part 2 implemented (direct implementation, not pidag DAG)
+
+### Status: GREEN
+
+### What was done
+- Implemented spec `specs/01-cast-tv-terminal-part2.md` (R1 capture bridge + R6 cast sender):
+  - `src/capture/mod.rs`, `src/capture/bridge.rs` — `ByteSource` trait seam, `Bridge::poll()` drains
+    available bytes into `Emulator::parse_bytes`, returns bytes fed, keeps latest `ScreenFrame`.
+  - `src/cast/mod.rs`, `src/cast/sender.rs` — pure `build_media_load_request(url)` → Cast v2
+    `{"type":"LOAD","media":{contentId,contentType,streamType}}`; `Sender` with injected
+    `Discovery = Box<dyn FnMut() -> Result<(), CastError>>`; real rust_cast session gated behind
+    `#[cfg(feature = "cast")]`; `CastError` (thiserror) with `Unreachable` variant.
+  - `src/lib.rs` — added `pub mod capture; pub mod cast;`.
+  - `src/emu/mod.rs` — re-exported `Emulator` at `emu::Emulator` (spec's stated path; was only at
+    `emu::term::Emulator`).
+- Tests (TDD-first) appended to `tests/cast_tv_tests.rs`: `test_capture_bridge_feeds_bytes_to_vte`,
+  `test_cast_load_url_builds_media_load`, `test_sender_reports_unreachable`. 18/18 pass.
+- All 4 spec exit criteria pass (test-ok, both files exist, wire field
+  `"type": "LOAD"` in sender.rs, no unwrap/expect in src/capture|src/cast).
+  Note: the orchestrator amended criterion 3 after the run — it originally
+  grepped the literal `"media/load"`, which passes via doc comments only (the
+  Cast v2 message type is `"type": "LOAD"`, not the string `"media/load"`).
+
+### Quality gate
+- `cargo fmt --check` PASS, `cargo check` PASS, `cargo clippy -D warnings` PASS, `cargo test` PASS.
+- Raw: `test result: ok. 18 passed; 0 failed; ...` (cast_tv_tests), 0/0 lib doctests.
+
+### Next
+- Part 3: HLS HTTP server + GStreamer encode pipeline (appsrc → h264 → hlsmux) behind the
+  `gstreamer` feature; then Part 4: wire rust_cast session + media_load behind `cast` feature.
+- Note for pidag dev (Bug A/B from prior run): implement-iter1 still wrote no files; the direct
+  implementation path above is the fallback that works.
