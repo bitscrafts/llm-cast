@@ -1,16 +1,69 @@
 # HANDOFF — chromecast-tv-mirror
 
-**Status**: GREEN — spec-01 **all 5 parts done** (part 1 emu+render, part 2
-capture+cast, part 3 serve+encode, part 4 closing sweep, part 5 real
-rust_cast session + castctl). Gate GREEN, all 23 tests pass, all 5 part-5
-exit criteria pass. The 10-test parent TDD contract is fully present and
-passing.
+**Status**: GREEN — spec-01 **all 5 parts done** + **milestone-1 device smoke
+test PASS** (2026-08-16): `castctl` on 10.10.10.208 loaded an HLS stream onto
+the Chromecast via rust_cast (DMR CC1AD845) and **Big Buck Bunny PLAYED on the
+TV**. Gate GREEN — 23/23 tests default, 22/22 with `--features cast`. rust_cast
+**CAN** `media_load` HLS — no pivot to Option 2.
 **Date**: 2026-08-16
-**Phase**: 7 — spec-01 complete (incl. real cast session); next: operator
-runs the milestone-1 device smoke test (`castctl` built with `--features
-cast`), or ADR on option 2 if rust_cast cannot media_load HLS
+**Phase**: 8 — milestone-1 GREEN. spec-01 + smoke test complete. Next: full
+pipeline integration (gstreamer encode on a LAN-reachable host + rust_cast
+into the real herdr stream), then pidag (53 specs).
 
 ---
+
+## 2026-08-16 (milestone-1 smoke test session) — PASS; one protocol bug fixed
+
+### What was DONE this session
+- **Built** `castctl` with `--features cast` (rust_cast 0.17 + openssl), ran
+  the milestone-1 smoke test against the operator device `10.10.10.208`
+  (Chromecast, MAC `54:60:09:DE:4D:24`).
+- **First run — HANG (diagnosed)**: used the canonical Big Buck Bunny URL
+  `http://commondatastorage.googleapis.com/gtv-videos-bucket/sample/BigBuckBunny.m3u8`.
+  The DMR launched (TV woke, Cast logo) but `media.load` blocked forever
+  (timeout 124) and nothing played. Root causes found:
+  1. **That URL is DEAD** — `commondatastorage.googleapis.com` returns
+     `403 AccessDenied` (anonymous access locked down) as of 2026. Confirmed
+     via curl from the container.
+  2. **A real protocol bug** (the hang): rust_cast's `media.load` waits
+     indefinitely in `receive_find_map` for a STATUS whose request_id matches
+     or whose media entry content_id matches. If the DMR drops the LOAD
+     entirely, NO status ever arrives → infinite hang. The DMR drops LOADs on
+     an unconnected app transport. **Canonical flow requires
+     `connection.connect(&application.transport_id)` AFTER `launch_app` and
+     BEFORE `media.load`** (verified against upstream rust_caster example:
+     `launch_app -> connection.connect(transport_id) -> media.load`). Our
+     session skipped that step.
+- **Fix** (`55c9a05`, committed): added the app-transport `connect` to
+  `src/cast/session.rs` step 2b, with the upstream-verified ordering noted in
+  the comment. Also gated `test_sender_accepts_device_address` to
+  `#[cfg(not(feature = "cast"))]` — under the cast feature its injected fake
+  address triggered a REAL connect to `192.168.1.50:8009` (≈130 s hang). The
+  test's spec contract is default-features-only ("session compiled out, no
+  network"); the live path is covered by the device smoke test.
+- **Second run — PASS**: `castctl 10.10.10.208
+  "https://test-streams.mux.dev/x36xhzz/x36xhzz.m3u8"` →
+  `castctl: PASS — media load sent` (exit 0, `load` returned `Ok(Status)`).
+  **Big Buck Bunny played on the TV** (operator-confirmed).
+
+### Working HLS URLs (2026-08-16)
+- ✅ `https://test-streams.mux.dev/x36xhzz/x36xhzz.m3u8` — HTTP 200, no
+  redirect, `audio/mpegurl`, 240p–1080p variants.
+- ❌ `commondatastorage.googleapis.com/.../BigBuckBunny.m3u8` — 403 now.
+- ⚠️ Apple `devstreaming-cdn.apple.com/.../img_bipbop...m3u8` — 302 redirect.
+- ❌ `bitdash-a.akamaihd.net/content/sintel/hls/playlist.m3u8` — 403 now.
+
+### Milestone status
+- **PIVOT GUARDRAIL: not triggered.** rust_cast CAN `media_load` HLS onto a
+  real device. Option-2 (custom receiver / registration / WebRTC) stays out of
+  scope for milestone 1.
+- Tests: 23/23 default, 22/22 `--features cast` (gated test excluded).
+- Agent-memory (topic `chromecast-tv-mirror`) stored:
+  `implementation/rustcast-transport-connect` (0.9),
+  `implementation/milestone1-smoke-pass` (0.9).
+
+---
+
 
 ## 2026-08-16 (part 5 session) — real rust_cast session + castctl; gate GREEN
 
