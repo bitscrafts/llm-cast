@@ -4,7 +4,7 @@
 - **Priority**: the crate does not build its test target, and every frame path
   needs this to avoid redrawing the whole grid.
 - **Status**: SPECIFIED — AMENDED 2026-08-16 (rustix std pin; duplicate-key
-  reporting pinned by D2d) · IN PROGRESS
+  reporting pinned by D2d) · IMPLEMENTED 2026-08-16 — gate GREEN, validate 9/9
 - **Source**: `HANDOFF.md` — "No public damage API in 0.24.2 → own diff via
   HashMap of last cells" (2026-08-14)
 - **Depends-On**: none
