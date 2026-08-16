@@ -17,6 +17,18 @@ set -uo pipefail
 ROOT="${1:-.}"
 cd "$ROOT" 2>/dev/null || { echo "quality-gate: no such directory: $ROOT" >&2; exit 2; }
 
+# Toolchain PATH bootstrap. rustup/cargo toolchains live outside the default
+# PATH on many machines (e.g. $CARGO_HOME/bin, ~/.cargo/bin), and
+# non-interactive shells (cron, the harness, CI) often lack them. A gate that
+# SKIPs its only stages is fail-open -- a broken project would pass. Add the
+# standard locations when present, then REQUIRE the detected toolchain below.
+for _tb in "${CARGO_HOME:-$HOME/.cargo}/bin" "$HOME/.cargo/bin"; do
+    if [ -d "$_tb" ] && ! case ":$PATH:" in *":$_tb:"*) ;; *) false ;; esac; then
+        PATH="$_tb:$PATH"
+    fi
+done
+unset _tb
+
 if [ -x "deploy/scripts/quality-gate.sh" ] && [ -z "${QG_NO_PROJECT_OVERRIDE:-}" ]; then
     echo "quality-gate: using project override deploy/scripts/quality-gate.sh"
     exec bash deploy/scripts/quality-gate.sh "$ROOT"
@@ -38,9 +50,21 @@ stage() {  # stage <name> <cmd...>
     fi
 }
 
+# require_tool <name> <project type> [install hint] -- the detected type's
+# essential toolchain is MANDATORY: a gate that cannot run its checks must
+# fail, not skip (fail-closed). Same policy as the Python/uv branch below.
+require_tool() {
+    if command -v "$1" >/dev/null 2>&1; then return 0; fi
+    echo "  $1 not found -- required for $2 projects" >&2
+    [ -n "${3:-}" ] && echo "  install: $3" >&2
+    FAILED=1
+    return 1
+}
+
 detected=""
 if [ -f Cargo.toml ]; then
     detected="rust"
+    require_tool cargo "rust" "curl -fsSL https://sh.rustup.rs | sh"
     PKG=""; [ -n "${QG_CARGO_PKG:-}" ] && PKG="-p ${QG_CARGO_PKG}"
     stage "cargo fmt --check"        cargo fmt $PKG -- --check
     stage "cargo check"              cargo check $PKG
@@ -49,6 +73,8 @@ if [ -f Cargo.toml ]; then
 elif [ -f package.json ]; then
     detected="node"
     RUN="npm"; [ -f pnpm-lock.yaml ] && RUN="pnpm"; [ -f yarn.lock ] && RUN="yarn"
+    require_tool node "node" "see https://nodejs.org"
+    require_tool "$RUN" "node"
     has() { node -e "process.exit(require('./package.json').scripts?.['$1']?0:1)" 2>/dev/null; }
     has lint  && stage "$RUN run lint"  "$RUN" run lint
     has build && stage "$RUN run build" "$RUN" run build
@@ -69,6 +95,7 @@ elif [ -f pyproject.toml ] || [ -f setup.py ] || ls ./*.py >/dev/null 2>&1; then
     fi
 elif [ -f go.mod ]; then
     detected="go"
+    require_tool go "go" "see https://go.dev/dl/"
     stage "gofmt"    gofmt -l .
     stage "go vet"   go vet ./...
     stage "go test"  go test ./...

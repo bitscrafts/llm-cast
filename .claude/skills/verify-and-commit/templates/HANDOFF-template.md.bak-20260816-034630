@@ -8,17 +8,6 @@ A task is not complete until this file reflects the work.
 **Phase**: <spec-NN / loop phase the diary sits between, e.g. "awaiting
 verify-and-commit for spec-02">
 
-## Specs status
-
-| spec | status | last result |
-|------|--------|-------------|
-| `NN-name.md` | SPECIFIED / IN PROGRESS / IMPLEMENTED / DONE / WITHDRAWN | <gate + validate outcome, or why withdrawn> |
-
-Lifecycle: SPECIFIED → IN PROGRESS (on dispatch) → IMPLEMENTED (gate + validate
-green, awaiting review) → DONE (orchestrator committed and this diary updated).
-WITHDRAWN records a spec whose premise proved false — keep the row, it is why
-the next session must not re-propose it.
-
 ---
 
 ## Done this session
@@ -36,14 +25,6 @@ the next session must not re-propose it.
 ## Key files
 
 - <authoritative specs/docs the next session must read first>
-
-## Memory keys
-
-<!-- Project memory-protocol keys stored this session (e.g. via agent-memory),
-     one per line. Required wherever the project mandates "summarize the memory
-     keys used in HANDOFF.md"; harmless elsewhere. -->
-
-- `<project>/<category>/<identifier>` — <one-line what it captured>
 
 ## Open issues
 

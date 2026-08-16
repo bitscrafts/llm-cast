@@ -25,6 +25,24 @@
 # dropped a third of every spec silently.
 #
 set -uo pipefail
+
+# Toolchain PATH bootstrap (same policy as quality-gate.sh): criteria such as
+# `cargo test` must resolve in non-interactive shells where rustup's bin dir
+# is not on the default PATH.
+for _tb in "${CARGO_HOME:-$HOME/.cargo}/bin" "$HOME/.cargo/bin"; do
+    if [ -d "$_tb" ] && ! case ":$PATH:" in *":$_tb:"*) ;; *) false ;; esac; then
+        PATH="$_tb:$PATH"
+    fi
+done
+unset _tb
+
+# python3 is required for exit-criteria extraction; fail loudly when absent
+# rather than letting the pipeline produce an empty item list (fail-open).
+command -v python3 >/dev/null 2>&1 || {
+    echo "validate-exit-criteria: python3 is required (criteria extraction)" >&2
+    exit 2
+}
+
 SPEC="${1:?usage: validate-exit-criteria.sh <spec.md> [project_root]}"
 ROOT="${2:-$(dirname "$SPEC")/..}"
 [ -f "$SPEC" ] || { echo "no such spec: $SPEC" >&2; exit 2; }
@@ -67,8 +85,9 @@ PY
 pass=0; fail=0; manual=0; n=0
 for item in "${ITEMS[@]}"; do
     n=$((n+1))
-    # first backticked span is the command
-    cmd="$(printf '%s' "$item" | grep -oP '(?<=`)[^`]*(?=`)' | head -1)"
+    # First backticked span is the command. Extracted with python3 (not
+    # grep -oP): -P is GNU-only and breaks on BSD/macOS grep.
+    cmd="$(printf '%s' "$item" | python3 -c 'import sys,re; m=re.search(r"`([^`]*)`", sys.stdin.read()); print(m.group(1) if m else "")')"
     label="$(printf '%s' "$item" | sed 's/^\s*-\s*\[[ xX]\]\s*//' | cut -c1-72)"
     if [ -z "$cmd" ]; then
         printf '  %2d MANUAL  %s\n' "$n" "$label"; manual=$((manual+1)); continue

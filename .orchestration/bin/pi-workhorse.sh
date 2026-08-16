@@ -241,10 +241,10 @@ FAIL if any requirement is unimplemented or any test was weakened."
     echo "== phase 2: implement =="
     imp_log="$ROOT/_tmp/pi-implement.$$.log"
     mkdir -p "$(dirname "$imp_log")"
-    before="$(cd "$ROOT" && git status --porcelain 2>/dev/null | md5sum)"
+    before="$(cd "$ROOT" && git status --porcelain 2>/dev/null)"
     "$SELF" implement "$SPEC" "$ROOT" 2>&1 | tee "$imp_log"
     imp_rc="${PIPESTATUS[0]}"
-    after="$(cd "$ROOT" && git status --porcelain 2>/dev/null | md5sum)"
+    after="$(cd "$ROOT" && git status --porcelain 2>/dev/null)"
 
     # Escalate when implement PRODUCES NOTHING, not only when the gate fails.
     # The repair ladder below never engages if phase 2 stalls: a flash model
@@ -258,7 +258,7 @@ FAIL if any requirement is unimplemented or any test was weakened."
             echo "== phase 2: implement changed nothing -- escalating =="
         fi
         "$SELF" implement "$SPEC" "$ROOT" --escalate 2>&1 | tee "$imp_log"
-        after="$(cd "$ROOT" && git status --porcelain 2>/dev/null | md5sum)"
+        after="$(cd "$ROOT" && git status --porcelain 2>/dev/null)"
         if [ "$before" = "$after" ] && ! grep -qE '^\s*SPEC-DEFECT:' "$imp_log"; then
             echo
             echo "STOPPED: implement produced no change even after escalation."

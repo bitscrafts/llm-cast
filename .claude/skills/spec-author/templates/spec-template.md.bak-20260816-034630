@@ -10,19 +10,6 @@
 
 ---
 
-## Verified Premises
-
-<Every load-bearing claim this spec makes about existing code, checked BEFORE
-dispatch. One bullet per claim, with file:line and what was confirmed. The
-author verifies these by reading; the implementer re-checks only what it
-touches. A premise that cannot be verified is a reason to stop and amend, not
-to write "should exist".>
-
-- `src/lib.rs:82-87` — `parse_duration` matches units `'h'|'m'|'s'` only; anything else returns `Err`
-- <...>
-
----
-
 ## Overview
 
 <The why. State the defect or driver concretely — quote the error, the measured
