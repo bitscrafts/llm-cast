@@ -60,8 +60,10 @@ pi-workhorse.sh run specs/NN-name.md <root>
 That drives implement → gate → repair (up to `ORCH_MAX_REPAIR_ROUNDS`) →
 escalate → review → validate, and **stops the moment something needs
 judgement**: a reported spec defect (exit 5), a gate still failing after
-escalation (exit 3), unmet exit criteria (exit 4), or an implement that
-produced nothing even after escalation (exit 6).
+escalation (exit 3), unmet exit criteria (exit 4), an implement that
+produced nothing even after escalation (exit 6), or a workhorse that
+COMMITTED — detected mechanically by HEAD movement, since the no-commit rule
+is prompt-level only (exit 7).
 
 **Escalation triggers on a stalled implement too**, not only on gate failure.
 A phase 2 that times out or leaves the tree unchanged is retried once on

@@ -61,7 +61,9 @@ pi-workhorse.sh run specs/NN-name.md <project_root>
 
 implement → gate → repair → escalate → review → validate, stopping whenever
 something needs judgement (exit 3: gate still failing after escalation; exit 4:
-exit criteria unmet). Phase 7 — read the diff, commit — is never run for you.
+exit criteria unmet; exit 7: the workhorse committed — a DIRECTIVES violation
+the harness detects mechanically via HEAD movement). Phase 7 — read the diff,
+commit — is never run for you.
 
 ---
 
