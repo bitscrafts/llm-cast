@@ -12,6 +12,10 @@ Cast v2 wire message type is `"type": "LOAD"`, not the string `"media/load"`.
 Criterion 3 now greps the real wire field; the implementation note was
 corrected to match. IMPLEMENTED 2026-08-16 — gate GREEN, review PASS,
 validate 4/4 (on the amended spec), EXIT 0, no exit-7 violation.
+CROSS-REFERENCE: part 5 (2026-08-16) amends the `Discovery` seam from
+`Result<(), CastError>` to `Result<DeviceAddr, CastError>` so the real
+rust_cast session has a device to connect to; the payload and error
+semantics pinned here are unchanged.
 
 ## Overview
 
