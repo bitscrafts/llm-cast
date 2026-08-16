@@ -16,6 +16,11 @@ thiserror = "1"
 bytes = "1"
 base64 = "0.22"
 log = "0.4"
+# Upstream-defect pin (spec-02 N1/G3 permits exactly this): alacritty_terminal
+# 0.24.2 -> rustix-openpty 0.1.1 pulls rustix 0.38.44 without the `std`
+# feature, so its no_std fd polyfill can never unify with std::os::fd. Forcing
+# `std` on the already-present rustix 0.38.44 resolves it.
+rustix = { version = "0.38.44", features = ["std"] }
 
 # gstreamer and rust_cast are optional / gated for now since they need system deps
 gstreamer = { version = "0.22", optional = true }

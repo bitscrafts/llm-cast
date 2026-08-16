@@ -189,6 +189,7 @@ dependencies = [
  "gstreamer-video",
  "log",
  "rust_cast",
+ "rustix 0.38.44",
  "serde",
  "serde_json",
  "thiserror",

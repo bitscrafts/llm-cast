@@ -3,7 +3,8 @@
 - **Project**: `/projects/chromecast-tv-mirror`
 - **Priority**: the crate does not build its test target, and every frame path
   needs this to avoid redrawing the whole grid.
-- **Status**: SPECIFIED — not yet dispatched
+- **Status**: SPECIFIED — AMENDED 2026-08-16 (permit rustix std pin after
+  upstream-defect discovery) · IN PROGRESS
 - **Source**: `HANDOFF.md` — "No public damage API in 0.24.2 → own diff via
   HashMap of last cells" (2026-08-14)
 - **Depends-On**: none
@@ -28,8 +29,16 @@ file. No terminal types, no rendering, no I/O: given the previous and current
 contents of a grid, say which cells changed.
 
 Verified premises: `src/render/font.rs` is the only source file; there is no
-`src/lib.rs`; `[dependencies]` already includes what the crate needs and this
-adds none.
+`src/lib.rs`.
+
+**AMENDED 2026-08-16** — an upstream defect makes the crate unbuildable as-is:
+`alacritty_terminal 0.24.2` → `rustix-openpty 0.1.1` pulls `rustix 0.38.44`
+**without the `std` feature**, so rustix uses its no_std fd polyfill and
+`std::os::fd::OwnedFd` fails its `AsFd` bound (E0277/E0308). This was latent at
+baseline — the missing-test-file resolution error aborted before dependency
+compilation. The only fix is forcing `std` on the already-present
+`rustix 0.38.44`; this amendment permits exactly that pin (N1/G3). No NEW
+dependency is introduced.
 
 ---
 
@@ -61,7 +70,9 @@ adds none.
 
 ### Non-Functional
 
-- **N1**: **no new dependencies.** `[dependencies]` in `Cargo.toml` is unchanged.
+- **N1**: **no new third-party dependencies.** The only permitted `Cargo.toml`
+  change is pinning the already-present transitive `rustix` with the `std`
+  feature (the upstream-defect fix, see Overview). Everything else stays put.
 - **N2**: no panics; no `unwrap()`, `expect()` or `panic!` in the module.
 - **N3**: the quality gate passes — which requires `tests/cast_tv_tests.rs` to
   exist, since `Cargo.toml` declares it.
@@ -128,7 +139,8 @@ together if removed keys are genuinely forgotten.
 - [ ] `grep -q 'pub fn reset' src/damage.rs` — reset exists (D7)
 - [ ] `! grep -qE 'unwrap\(\)|expect\(|panic!' src/damage.rs` — no panicking calls (N2)
 - [ ] `git diff --quiet -- src/render/font.rs` — font.rs untouched (N4)
-- [ ] `git diff --quiet -- Cargo.toml` — no dependency added (N1)
+- [ ] `! git diff -- Cargo.toml | grep -E '^[+-][^-+]' | grep -v rustix` — the only
+      Cargo.toml change is the permitted rustix std pin (N1)
 
 **Prose criteria**:
 
@@ -143,8 +155,9 @@ together if removed keys are genuinely forgotten.
 - **G1 — do NOT edit this spec.** If it is wrong, reply with a first line of
   `SPEC-DEFECT: <summary>`.
 - **G2 — do NOT commit.**
-- **G3 — do NOT add a dependency, and do not edit `Cargo.toml`** (N1). The test
-  target is already declared; create the file it points at.
+- **G3 — do NOT edit `Cargo.toml`** except the permitted `rustix` std-feature
+  pin (N1). No other dependency changes. The test target is already declared;
+  create the file it points at.
 - **G4 — do NOT touch `src/render/font.rs`** (N4).
 - **G5 — do NOT import `alacritty_terminal`** in the damage module. It must be
   testable without a terminal.
@@ -165,6 +178,7 @@ acquire one. Duplicate keys in a single call are last-write-wins, not a panic.
 | `src/lib.rs` | **NEW** — declares `pub mod damage;` |
 | `src/damage.rs` | **NEW** — `CellKey`, `CellContent`, `DamageTracker` (D1–D7) |
 | `tests/cast_tv_tests.rs` | **NEW** — the TDD Contract above |
+| `Cargo.toml` | **PIN** — add `rustix = { version = "0.38.44", features = ["std"] }` (upstream-defect fix; the only permitted change, N1/G3) |
 
-**Not modified**: `Cargo.toml`, `src/render/font.rs`, anything under
-`.orchestration/` or `.claude/`.
+**Not modified**: `src/render/font.rs`, anything under `.orchestration/` or
+`.claude/`.
