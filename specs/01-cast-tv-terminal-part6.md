@@ -127,7 +127,7 @@ can bind `127.0.0.1:0`).
 
 | Test Name | Given | Expects |
 |-----------|-------|---------|
-| `test_pipe_source_reads_available_bytes` | temp file containing `b"hi\x1b[31m"`; `PipeSource::open` on it | `read_available(&mut buf)` returns 5 and copies the bytes; a second read returns 0 (at EOF) |
+| `test_pipe_source_reads_available_bytes` | temp file containing `b"hi\x1b[31m"`; `PipeSource::open` on it | `read_available(&mut buf)` returns 7 (2 + 5 = the file's length) and copies the bytes; a second read returns 0 (at EOF) |
 | `test_null_encoder_counts_frames` | `NullEncoder::new("http://h:8080/live.m3u8")` | 3× `submit_frame(&[0u8;4], 8, 8)` → `submitted()==3`; `stream_url()==` the URL |
 | `test_pipeline_submits_changed_frames` | Pipeline over an in-memory source emitting an ANSI string, NullEncoder; `poll_and_submit(0)` | `submitted() >= 1`; the encoder saw the emu grid size × 8 canvas |
 | `test_pipeline_skips_unchanged_frames` | after the first submit, a second `poll_and_submit(now)` with no new bytes | `submitted()` unchanged (diff frame is empty → no encode) |

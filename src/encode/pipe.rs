@@ -1,33 +1,237 @@
-//! H.264 encode pipeline (R4): `appsrc -> vaapih264enc -> hlsmux`.
+//! H.264 → HLS encode (R4): RGBA canvases in, an HLS stream out.
 //!
-//! The real pipeline needs the optional `gstreamer` feature (system GStreamer
-//! dev packages); under default features this module compiles with the codec
-//! constant only. The `gstreamer` feature flag must be enabled to call
-//! [`build_pipeline`].
+//! Default features ship [`NullEncoder`] (records submissions, emits
+//! nothing) so the whole wiring is testable in-container. The real
+//! GStreamer encoder, [`GstEncoder`], is gated behind the optional
+//! `gstreamer` feature: `appsrc -> videoconvert -> {x264enc|vaapih264enc} ->
+//! hlssink2`, which writes ~1 s H.264 segments plus a live playlist into an
+//! output dir. It needs the system GStreamer dev packages and runs only on
+//! the operator's LAN host — never in-container.
 
-/// H.264 encoder used for the cast stream (VA-API hardware encode).
-pub const H264_ENCODER: &str = "h264";
+/// One frame sink: a rasterized RGBA canvas is submitted, an HLS stream
+/// comes out the other side. Default features ship [`NullEncoder`]; the
+/// real GStreamer encoder is `#[cfg(feature = "gstreamer")]`.
+pub trait Encode {
+    /// Encode one RGBA canvas (`width*height*4` bytes, row-major).
+    fn submit_frame(&mut self, rgba: &[u8], width: usize, height: usize)
+        -> Result<(), EncodeError>;
+    /// The URL the HLS stream is served at — what the cast LOAD targets.
+    fn stream_url(&self) -> String;
+}
 
-/// Build the GStreamer pipeline that turns rasterized frames (pushed into
-/// `appsrc`) into an HLS playlist + H.264 segments (`hlsmux`).
-///
-/// Gated behind the `gstreamer` feature: the crates are optional because
-/// they require system GStreamer development packages. The pipeline is
-/// assembled at runtime, so missing plugins or a missing VA-API device
-/// surface as errors — never panics.
+/// Errors surfaced by an encoder.
+#[derive(Debug, thiserror::Error)]
+pub enum EncodeError {
+    /// The GStreamer pipeline rejected the frame.
+    #[error("gstreamer error: {0}")]
+    Gst(String),
+    /// The submitted buffer does not match the declared canvas.
+    #[error("buffer error: {0}")]
+    Buffer(String),
+    /// The capture side failed while the coordinator stepped.
+    #[error("capture error: {0}")]
+    Capture(#[from] crate::capture::bridge::BridgeError),
+}
+
+/// Default-features encoder: records submissions, emits nothing. In-container
+/// tests + dry-run validation prove the wiring minus the codec.
+pub struct NullEncoder {
+    submitted: usize,
+    last_dims: (usize, usize),
+    url: String,
+}
+
+impl NullEncoder {
+    /// An encoder that reports `url` as its stream URL.
+    pub fn new(url: String) -> Self {
+        NullEncoder {
+            submitted: 0,
+            last_dims: (0, 0),
+            url,
+        }
+    }
+
+    /// How many canvases have been submitted.
+    pub fn submitted(&self) -> usize {
+        self.submitted
+    }
+
+    /// `(width, height)` of the last submitted canvas.
+    pub fn last_dims(&self) -> (usize, usize) {
+        self.last_dims
+    }
+}
+
+impl Encode for NullEncoder {
+    fn submit_frame(
+        &mut self,
+        rgba: &[u8],
+        width: usize,
+        height: usize,
+    ) -> Result<(), EncodeError> {
+        // A recording stub: sizes are not validated (the TDD contract feeds
+        // a 4-byte buffer for an 8×8 canvas — only the count matters here).
+        let _ = (rgba, width, height);
+        self.submitted += 1;
+        self.last_dims = (width, height);
+        Ok(())
+    }
+
+    fn stream_url(&self) -> String {
+        self.url.clone()
+    }
+}
+
+/// Real H.264 → HLS encoder: pushes RGBA frames into an `appsrc` feeding
+/// `videoconvert ! {x264enc|vaapih264enc} ! hlssink2` (see
+/// [`build_pipeline`]). `submit_frame` pushes one buffer with a running
+/// timestamp; `stream_url()` reports the URL the HLS output is served at.
 #[cfg(feature = "gstreamer")]
-pub fn build_pipeline() -> Result<gstreamer::Pipeline, String> {
+pub struct GstEncoder {
+    pipeline: gstreamer::Pipeline,
+    appsrc: gstreamer_app::AppSrc,
+    url: String,
+    fps: u32,
+    ts: u64,
+}
+
+#[cfg(feature = "gstreamer")]
+impl GstEncoder {
+    /// Build the encoder: `encoder` is `"x264"` (software, default) or
+    /// `"vaapi"` (VA-API hardware), the canvas is `width`×`height` at `fps`
+    /// frames per second, HLS artifacts land in `outdir` (segment files plus
+    /// `live.m3u8`), and the playlist lists segment URLs rooted at `root`.
+    ///
+    /// Every fallible call is mapped into [`EncodeError::Gst`] — no panics.
+    pub fn new(
+        encoder: &str,
+        width: usize,
+        height: usize,
+        fps: u32,
+        outdir: &str,
+        root: &str,
+        url: String,
+    ) -> Result<Self, EncodeError> {
+        use gstreamer::prelude::*;
+
+        gstreamer::init().map_err(|e| EncodeError::Gst(e.to_string()))?;
+        let (pipeline, appsrc) = build_pipeline(encoder, width, height, fps, outdir, root)?;
+        pipeline
+            .set_state(gstreamer::State::Playing)
+            .map_err(|e| EncodeError::Gst(format!("set_state(Playing): {e:?}")))?;
+        Ok(GstEncoder {
+            pipeline,
+            appsrc,
+            url,
+            fps: fps.max(1),
+            ts: 0,
+        })
+    }
+}
+
+#[cfg(feature = "gstreamer")]
+impl Encode for GstEncoder {
+    fn submit_frame(
+        &mut self,
+        rgba: &[u8],
+        width: usize,
+        height: usize,
+    ) -> Result<(), EncodeError> {
+        use gstreamer::prelude::*;
+
+        let expected = width
+            .checked_mul(height)
+            .and_then(|area| area.checked_mul(4))
+            .ok_or_else(|| EncodeError::Buffer("canvas size overflow".to_string()))?;
+        if rgba.len() < expected {
+            return Err(EncodeError::Buffer(format!(
+                "expected {expected} bytes, got {}",
+                rgba.len()
+            )));
+        }
+
+        // One buffer per frame with a running timestamp. The appsrc is
+        // `format=time is-live=true do-timestamp=true` (set in the launch
+        // string), so AppSrc creates the default TIME segment itself and
+        // hlssink2 treats the stream as live.
+        let duration = 1_000_000_000u64 / u64::from(self.fps);
+        let mut buffer =
+            gstreamer::Buffer::with_size(expected).map_err(|e| EncodeError::Gst(e.to_string()))?;
+        {
+            let buf = buffer
+                .get_mut()
+                .ok_or_else(|| EncodeError::Gst("buffer not writable".to_string()))?;
+            buf.copy_from_slice(0, &rgba[..expected])
+                .map_err(|_| EncodeError::Gst("buffer copy failed".to_string()))?;
+            buf.set_pts(Some(gstreamer::ClockTime::from_nseconds(self.ts)));
+            buf.set_duration(Some(gstreamer::ClockTime::from_nseconds(duration)));
+        }
+        self.ts += duration;
+
+        self.appsrc
+            .push_buffer(buffer)
+            .map_err(|e| EncodeError::Gst(format!("appsrc push failed: {e}")))?;
+        Ok(())
+    }
+
+    fn stream_url(&self) -> String {
+        self.url.clone()
+    }
+}
+
+#[cfg(feature = "gstreamer")]
+impl Drop for GstEncoder {
+    fn drop(&mut self) {
+        use gstreamer::prelude::*;
+        let _ = self.pipeline.set_state(gstreamer::State::Null);
+    }
+}
+
+/// Build the real GStreamer pipeline:
+///
+/// ```text
+/// appsrc ... ! videoconvert ! {x264enc ... | vaapih264enc} ! hlssink2 ...
+/// ```
+///
+/// `hlssink2` (gst-plugins-bad — there is no `hlsmux` element, the part-4
+/// sketch was wrong) writes ~1 s H.264 segments into
+/// `outdir/segment/seg_%05d.ts` and a live playlist at `outdir/live.m3u8`
+/// (`target-duration=1`, no ENDLIST while running, rolling `max-files=30`
+/// window). `root` becomes the playlist's absolute segment URL prefix via
+/// `playlist-root`, so the device fetches `ROOT/seg_00000.ts` and our
+/// `/segment/:name` route serves it.
+#[cfg(feature = "gstreamer")]
+pub fn build_pipeline(
+    encoder: &str,
+    width: usize,
+    height: usize,
+    fps: u32,
+    outdir: &str,
+    root: &str,
+) -> Result<(gstreamer::Pipeline, gstreamer_app::AppSrc), EncodeError> {
     use gstreamer::prelude::*;
 
-    gstreamer::init().map_err(|e| e.to_string())?;
-    let bin = gstreamer::parse_launch(
-        "appsrc name=src format=time is-live=true \
-         ! videoconvert ! vaapih264enc \
-         ! hlsmux location=live.m3u8",
-    )
-    .map_err(|e| e.to_string())?;
-    // parse_launch of a pipeline string yields a Bin whose top element is
-    // the Pipeline itself; a failed downcast is a genuine error.
-    bin.downcast::<gstreamer::Pipeline>()
-        .map_err(|_| "parse_launch did not yield a Pipeline".to_string())
+    let enc = match encoder {
+        "vaapi" => "vaapih264enc".to_string(),
+        _ => {
+            "x264enc tune=zerolatency speed-preset=veryfast bitrate=800 key-int-max=30".to_string()
+        }
+    };
+    let launch = format!(
+        "appsrc name=src format=time is-live=true do-timestamp=true \
+         caps=\"video/x-raw,format=RGBA,width={width},height={height},framerate={fps}/1\" \
+         ! videoconvert ! {enc} \
+         ! hlssink2 location={outdir}/segment/seg_%05d.ts \
+                    playlist-location={outdir}/live.m3u8 \
+                    target-duration=1 max-files=30 playlist-root={root}"
+    );
+    let element = gstreamer::parse_launch(&launch).map_err(|e| EncodeError::Gst(e.to_string()))?;
+    let pipeline = element
+        .downcast::<gstreamer::Pipeline>()
+        .map_err(|_| EncodeError::Gst("parse_launch did not yield a Pipeline".to_string()))?;
+    let appsrc = pipeline
+        .by_name("src")
+        .and_then(|element| element.downcast::<gstreamer_app::AppSrc>().ok())
+        .ok_or_else(|| EncodeError::Gst("appsrc not found in pipeline".to_string()))?;
+    Ok((pipeline, appsrc))
 }

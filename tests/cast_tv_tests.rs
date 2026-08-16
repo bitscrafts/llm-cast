@@ -472,7 +472,9 @@ fn test_device_addr_default_port() {
 // Default Media Receiver's fetch, so no client dependency is needed.
 
 use cast_tv_terminal::serve::server;
+use cast_tv_terminal::serve::store::{MapStore, MediaStore};
 use std::collections::HashMap;
+use std::sync::Arc;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 
@@ -506,42 +508,74 @@ async fn raw_get(addr: &str, path: &str) -> (u16, HashMap<String, String>, Vec<u
     (status, headers, response[head_end + 4..].to_vec())
 }
 
-/// Boot the real HLS router on an ephemeral port; returns its address.
-async fn spawn_server() -> String {
+/// Boot the real HLS router over a store on an ephemeral port; returns its
+/// address.
+async fn spawn_server(store: Arc<dyn MediaStore>) -> String {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap().to_string();
     tokio::spawn(async move {
-        axum::serve(listener, server::app()).await.unwrap();
+        axum::serve(listener, server::app(store)).await.unwrap();
     });
     addr
 }
 
-/// T5 (R5) — GET /live.m3u8: HTTP 200, `Access-Control-Allow-Origin`
-/// present, and a real playlist body. Without CORS the receiver cannot read
-/// the stream cross-origin, so this is the seam the cast depends on.
+/// T5/T6 (R5, reworked in spec-01 part 6) — the HLS router reads LIVE from
+/// the store instead of static stand-ins: GET /live.m3u8 returns 200 with
+/// the seeded playlist text, GET /segment/<name> returns 200 with the
+/// seeded segment bytes, an unknown segment is 404, and the CORS header is
+/// present on both 200s (the part-3 assertions are preserved).
 #[tokio::test]
-async fn test_hls_playlist_has_cors() {
-    let addr = spawn_server().await;
-    let (status, headers, body) = raw_get(&addr, "/live.m3u8").await;
+async fn test_served_playlist_reads_from_store() {
+    let playlist_text =
+        "#EXTM3U\n#EXT-X-VERSION:3\n#EXT-X-TARGETDURATION:1\n#EXTINF:1.0,\nseg0.ts\n";
+    let store: Arc<dyn MediaStore> = Arc::new(MapStore::seeded(
+        playlist_text,
+        "seg0.ts",
+        b"SEG0-BYTES-0000000000000000".to_vec(),
+    ));
+    let addr = spawn_server(store).await;
 
+    let (status, headers, body) = raw_get(&addr, "/live.m3u8").await;
     assert_eq!(status, 200);
     assert!(
         headers.contains_key("access-control-allow-origin"),
-        "response must carry Access-Control-Allow-Origin, got headers {headers:?}"
+        "playlist response must carry Access-Control-Allow-Origin, got headers {headers:?}"
     );
-    assert!(body.starts_with(b"#EXTM3U"), "playlist body must be HLS");
+    assert_eq!(body, playlist_text.as_bytes());
+
+    let (status, headers, body) = raw_get(&addr, "/segment/seg0.ts").await;
+    assert_eq!(status, 200);
+    assert!(
+        headers.contains_key("access-control-allow-origin"),
+        "segment response must carry Access-Control-Allow-Origin, got headers {headers:?}"
+    );
+    assert_eq!(body, b"SEG0-BYTES-0000000000000000");
+
+    let (status, _, _) = raw_get(&addr, "/segment/unknown.ts").await;
+    assert_eq!(status, 404);
 }
 
-/// T6 (R5) — GET a segment path: HTTP 200 and a non-empty body carrying
-/// exactly the segment bytes the server publishes.
+/// P7 — `serve_hls(store, listener)` serves the store-backed router on a
+/// caller-provided bound listener (tests bind `127.0.0.1:0`).
 #[tokio::test]
-async fn test_served_segment_bytes() {
-    let addr = spawn_server().await;
-    let (status, _headers, body) = raw_get(&addr, "/segment/seg0.ts").await;
+async fn test_serve_hls_binds_and_responds() {
+    let playlist_text =
+        "#EXTM3U\n#EXT-X-VERSION:3\n#EXT-X-TARGETDURATION:1\n#EXTINF:1.0,\nseg0.ts\n";
+    let store: Arc<dyn MediaStore> = Arc::new(MapStore::seeded(
+        playlist_text,
+        "seg0.ts",
+        b"SEG0-BYTES-0000000000000000".to_vec(),
+    ));
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap().to_string();
+    tokio::spawn(async move {
+        server::serve_hls(store, listener).await;
+    });
 
+    let (status, headers, body) = raw_get(&addr, "/live.m3u8").await;
     assert_eq!(status, 200);
-    assert!(!body.is_empty(), "segment body must not be empty");
-    assert_eq!(body, server::SEGMENT_BYTES);
+    assert!(headers.contains_key("access-control-allow-origin"));
+    assert!(body.starts_with(b"#EXTM3U"));
 }
 
 // ===========================================================================
@@ -625,4 +659,134 @@ fn test_no_production_unwrap() {
         offenders.is_empty(),
         "production code must not call .unwrap()/.expect(), found: {offenders:?}"
     );
+}
+
+// ===========================================================================
+// spec-01 part 6 (full pipeline integration, default features): PipeSource,
+// NullEncoder + Encode trait, the pipeline coordinator, and the artifact
+// stores. Written before the production code per the TDD contract.
+// ===========================================================================
+
+use cast_tv_terminal::capture::pipe::PipeSource;
+use cast_tv_terminal::encode::pipe::{Encode, NullEncoder};
+use cast_tv_terminal::pipeline::{Pipeline, PipelineConfig};
+use cast_tv_terminal::serve::store::DirStore;
+
+/// Unique throwaway directory under the OS temp dir (no tempfile dep).
+fn scratch_dir(tag: &str) -> PathBuf {
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.subsec_nanos())
+        .unwrap_or(0);
+    let dir = std::env::temp_dir().join(format!("cast-tv-{tag}-{}-{nanos}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    dir
+}
+
+/// P1 — `PipeSource::open` on a file already holding `b"hi\x1b[31m"` (5
+/// bytes): the first `read_available` copies them all, and a second read at
+/// the current EOF returns 0 — the never-blocking `ByteSource` contract.
+#[test]
+fn test_pipe_source_reads_available_bytes() {
+    let dir = scratch_dir("pipe-source");
+    let path = dir.join("pane.out");
+    std::fs::write(&path, b"hi\x1b[31m").unwrap();
+
+    let mut source = PipeSource::open(&path).unwrap();
+    let mut buf = [0u8; 64];
+    // The file holds 7 bytes: "hi" (2) + "\x1b[31m" (5).
+    let n = source.read_available(&mut buf).unwrap();
+    assert_eq!(n, 7);
+    assert_eq!(&buf[..7], b"hi\x1b[31m");
+
+    let n = source.read_available(&mut buf).unwrap();
+    assert_eq!(n, 0, "a second read at EOF must return 0");
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// P2 — `NullEncoder` counts submissions and reports the stream URL.
+#[test]
+fn test_null_encoder_counts_frames() {
+    let url = "http://h:8080/live.m3u8";
+    let mut encoder = NullEncoder::new(url.to_string());
+    for _ in 0..3 {
+        encoder.submit_frame(&[0u8; 4], 8, 8).unwrap();
+    }
+    assert_eq!(encoder.submitted(), 3);
+    assert_eq!(encoder.stream_url(), url);
+}
+
+/// A 3×2 emulator fed `"\x1b[31mHELLO"` through the same FakeByteSource the
+/// part-2 bridge test uses, inside the real coordinator loop.
+fn sample_pipeline() -> Pipeline<FakeByteSource, NullEncoder> {
+    let source = FakeByteSource {
+        data: b"\x1b[31mHELLO".to_vec(),
+        pos: 0,
+    };
+    let bridge = Bridge::new(source, Emulator::with_size(3, 2));
+    Pipeline::new(
+        bridge,
+        NullEncoder::new("http://h:8080/live.m3u8".to_string()),
+        PipelineConfig::default(),
+    )
+}
+
+/// P3 — a changed frame (new bytes through the bridge) is submitted, and
+/// the encoder saw the emu grid size × 8 canvas (3×2 grid → 24×16).
+#[test]
+fn test_pipeline_submits_changed_frames() {
+    let mut pipeline = sample_pipeline();
+    pipeline.poll_and_submit(0).unwrap();
+    assert!(pipeline.encoder().submitted() >= 1);
+    assert_eq!(pipeline.encoder().last_dims(), (3 * 8, 2 * 8));
+}
+
+/// P4 — with no new bytes and the keepalive not yet due, a second step
+/// submits nothing: unchanged diff frames are skipped.
+#[test]
+fn test_pipeline_skips_unchanged_frames() {
+    let mut pipeline = sample_pipeline();
+    pipeline.poll_and_submit(0).unwrap();
+    let first = pipeline.encoder().submitted();
+    pipeline.poll_and_submit(10).unwrap();
+    assert_eq!(pipeline.encoder().submitted(), first);
+}
+
+/// P5 — an unchanged screen past the keepalive deadline still produces
+/// exactly one more submission (the keepalive frame) so HLS keeps flowing.
+#[test]
+fn test_pipeline_keepalive_after_idle() {
+    let mut pipeline = sample_pipeline();
+    pipeline.poll_and_submit(0).unwrap();
+    let first = pipeline.encoder().submitted();
+    pipeline.poll_and_submit(1001).unwrap();
+    assert_eq!(pipeline.encoder().submitted(), first + 1);
+    assert_eq!(pipeline.encoder().last_dims(), (3 * 8, 2 * 8));
+}
+
+/// P6 — `DirStore` reads a live hlssink2-style output dir: playlist text,
+/// segment bytes, and None for unknown names.
+#[test]
+fn test_dir_store_reads_output_dir() {
+    let dir = scratch_dir("dir-store");
+    std::fs::write(
+        dir.join("live.m3u8"),
+        "#EXTM3U\n#EXTINF:1.0,\nseg_00000.ts\n",
+    )
+    .unwrap();
+    std::fs::write(dir.join("seg_00000.ts"), b"SEGMENT-00000").unwrap();
+
+    let store = DirStore::new(&dir);
+    assert_eq!(
+        store.playlist(),
+        Some("#EXTM3U\n#EXTINF:1.0,\nseg_00000.ts\n".to_string())
+    );
+    assert_eq!(
+        store.segment("seg_00000.ts"),
+        Some(b"SEGMENT-00000".to_vec())
+    );
+    assert_eq!(store.segment("missing.ts"), None);
+
+    let _ = std::fs::remove_dir_all(&dir);
 }
