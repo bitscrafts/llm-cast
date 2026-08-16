@@ -48,6 +48,13 @@ QUALITY GATE: PASSED (rust)
 - `chromecast-tv-mirror/implementation/part4-no-unwrap-sweep` (0.7) — part-4
   sweep done: 10/10 parent contract tests present+passing, no production
   unwrap/expect; test asserts walk non-vacuous.
+- `chromecast-tv-mirror/implementation/part2-capture-cast` (0.8) —
+  orchestrator-stored: the capture/cast implementation + the media/load
+  wire-field correction.
+- `chromecast-tv-mirror/implementation/spec01-complete` (0.85) —
+  orchestrator-stored: spec-01 completion status (six modules, 21 tests,
+  default-feature compile, Cargo.toml untouched) + the review-caught-spec-
+  defect-every-part orchestration pattern.
 
 ### Next steps
 - Optional (feature-gated, needs system deps): rust_cast `media_load` HLS onto
