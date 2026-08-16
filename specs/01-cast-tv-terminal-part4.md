@@ -7,7 +7,10 @@ the full 10-test TDD contract, and the parent's fail-closed final sweep
 **Status**: SPECIFIED — AMENDED 2026-08-16 (TDD now lists the full parent
 contract so this part confirms every test exists and passes; the no-unwrap
 sweep made fail-closed so a missing module dir fails rather than passing
-vacuously).
+vacuously). AMENDED AGAIN 2026-08-16 after the implement pass: exit criterion
+3 still grepped the literal `"media/load"` (comment-trivial — the Cast v2
+wire message type is `"type": "LOAD"`); criterion 3 now greps the wire field,
+matching the part-2 amendment.
 
 ## Overview
 
@@ -54,7 +57,7 @@ the R8 no-unwrap discipline. No new modules.
 
 - [ ] `cargo test --test cast_tv_tests 2>&1 | grep -q "test result: ok"`
 - [ ] `for f in src/capture/bridge.rs src/emu/term.rs src/render/raster.rs src/encode/pipe.rs src/serve/server.rs src/cast/sender.rs; do [ -f "$f" ] || exit 1; done`
-- [ ] `grep -q "media/load" src/cast/sender.rs`
+- [ ] `grep -qE '"type"[[:space:]]*:[[:space:]]*"LOAD"' src/cast/sender.rs`
 - [ ] `for d in src/capture src/emu src/render src/encode src/serve src/cast; do [ -d "$d" ] || exit 1; done && ! grep -rE '\.unwrap\(\)|\.expect\(' src/capture src/emu src/render src/encode src/serve src/cast 2>/dev/null | grep -v '//' | grep -v '#\[cfg\(test\)\]' | grep -v test`
 
 ## Guardrails
