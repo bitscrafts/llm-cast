@@ -223,7 +223,8 @@ FAIL if any requirement is unimplemented or any test was weakened."
   # a shell loop, and it STOPS and hands back the moment anything needs
   # judgement. Exit codes: 3 gate still failing after escalation, 4 exit criteria
   # unmet, 5 the workhorse reports the spec itself is wrong, 6 implement
-  # produced nothing even after escalation.
+  # produced nothing even after escalation, 7 the workhorse COMMITTED (HEAD
+  # moved) -- DIRECTIVES forbids any git write; the orchestrator must unwind.
   # Phase 7 (read the diff, commit) is never run here; it belongs to the
   # orchestrator.
   run)
@@ -242,9 +243,30 @@ FAIL if any requirement is unimplemented or any test was weakened."
     imp_log="$ROOT/_tmp/pi-implement.$$.log"
     mkdir -p "$(dirname "$imp_log")"
     before="$(cd "$ROOT" && git status --porcelain 2>/dev/null)"
+    head0="$(cd "$ROOT" && git rev-parse HEAD 2>/dev/null)"
+
+    # DIRECTIVES section 1 forbids the workhorse from committing -- but that
+    # rule is PROMPT-LEVEL ONLY. pi's own configuration (e.g. a planner
+    # profile) does not forbid git commit, so the harness must detect it
+    # mechanically. A committed change also breaks the before/after tree
+    # comparison below (both would read clean), so HEAD movement is checked
+    # first, after every pi invocation.
+    check_no_commit() {
+        local now
+        now="$(cd "$ROOT" && git rev-parse HEAD 2>/dev/null)"
+        if [ -n "$head0" ] && [ "$now" != "$head0" ]; then
+            echo
+            echo "VIOLATION: the workhorse COMMITTED (HEAD moved $head0 -> $now)."
+            echo "DIRECTIVES section 1 forbids any git write. STOPPING -- the"
+            echo "orchestrator must unwind the commit; the loop will not continue."
+            exit 7
+        fi
+    }
+
     "$SELF" implement "$SPEC" "$ROOT" 2>&1 | tee "$imp_log"
     imp_rc="${PIPESTATUS[0]}"
     after="$(cd "$ROOT" && git status --porcelain 2>/dev/null)"
+    check_no_commit
 
     # Escalate when implement PRODUCES NOTHING, not only when the gate fails.
     # The repair ladder below never engages if phase 2 stalls: a flash model
@@ -259,6 +281,7 @@ FAIL if any requirement is unimplemented or any test was weakened."
         fi
         "$SELF" implement "$SPEC" "$ROOT" --escalate 2>&1 | tee "$imp_log"
         after="$(cd "$ROOT" && git status --porcelain 2>/dev/null)"
+        check_no_commit
         if [ "$before" = "$after" ] && ! grep -qE '^\s*SPEC-DEFECT:' "$imp_log"; then
             echo
             echo "STOPPED: implement produced no change even after escalation."
@@ -289,6 +312,7 @@ FAIL if any requirement is unimplemented or any test was weakened."
         if [ "$n" -gt "$rounds" ]; then
             echo "== phase 4: gate still failing after $rounds rounds -- escalating =="
             "$SELF" repair "$SPEC" "$ROOT" --escalate || true
+            check_no_commit
             if "$SELF" gate "$ROOT"; then break; fi
             echo
             echo "STOPPED: gate fails after escalation. This needs judgement --"
@@ -297,10 +321,12 @@ FAIL if any requirement is unimplemented or any test was weakened."
         fi
         echo "== phase 4: repair (round $n/$rounds) =="
         "$SELF" repair "$SPEC" "$ROOT" || true
+        check_no_commit
     done
 
     echo "== phase 5: review (read-only) =="
     "$SELF" review "$SPEC" "$ROOT" || true
+    check_no_commit
 
     echo "== phase 6: validate exit criteria =="
     "$SELF" validate "$SPEC" "$ROOT" || {

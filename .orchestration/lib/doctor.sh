@@ -47,7 +47,12 @@ for dir in "$CSK" "$PSK"; do
         [ -f "$sk" ] || continue
         name="$(basename "$(dirname "$sk")")"
         # references of the form: skill: `x`  /  skill `x`  /  **`x`** skill
-        refs="$(grep -oiE 'skills?:? +\*{0,2}`[a-z0-9-]+`' "$sk" \
+        # and the prose reverse: `x` skill  /  `x` skills
+        # (e.g. "feeds Claude's `verify-and-commit` skill" -- backticked name
+        # BEFORE the word skill). Both orders name the same handoff; a check
+        # that only sees one order would report OK while the other order's
+        # reference is broken.
+        refs="$(grep -oiE '(skills?:? +\*{0,2}`[a-z0-9-]+`|`[a-z0-9-]+`\*{0,2} +skills?)' "$sk" \
                 | grep -oE '`[a-z0-9-]+`' | tr -d '`' | sort -u)"
         for r in $refs; do
             # No whitelist. A name written as a skill must resolve to an
