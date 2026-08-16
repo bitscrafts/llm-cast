@@ -91,8 +91,6 @@ pub struct GstEncoder {
     pipeline: gstreamer::Pipeline,
     appsrc: gstreamer_app::AppSrc,
     url: String,
-    fps: u32,
-    ts: u64,
 }
 
 #[cfg(feature = "gstreamer")]
@@ -123,8 +121,6 @@ impl GstEncoder {
             pipeline,
             appsrc,
             url,
-            fps: fps.max(1),
-            ts: 0,
         })
     }
 }
@@ -137,8 +133,6 @@ impl Encode for GstEncoder {
         width: usize,
         height: usize,
     ) -> Result<(), EncodeError> {
-        use gstreamer::prelude::*;
-
         let expected = width
             .checked_mul(height)
             .and_then(|area| area.checked_mul(4))
@@ -150,11 +144,11 @@ impl Encode for GstEncoder {
             )));
         }
 
-        // One buffer per frame with a running timestamp. The appsrc is
-        // `format=time is-live=true do-timestamp=true` (set in the launch
-        // string), so AppSrc creates the default TIME segment itself and
-        // hlssink2 treats the stream as live.
-        let duration = 1_000_000_000u64 / u64::from(self.fps);
+        // appsrc is `format=time is-live=true do-timestamp=true` (set in the
+        // launch string): do-timestamp stamps PTS+DTS from the pipeline clock,
+        // so the muxed TS carries real-time timestamps. Setting PTS manually
+        // would fight the clock — the DTS diverges from the PTS and the
+        // segments carry inconsistent timestamps.
         let mut buffer =
             gstreamer::Buffer::with_size(expected).map_err(|e| EncodeError::Gst(e.to_string()))?;
         {
@@ -163,10 +157,7 @@ impl Encode for GstEncoder {
                 .ok_or_else(|| EncodeError::Gst("buffer not writable".to_string()))?;
             buf.copy_from_slice(0, &rgba[..expected])
                 .map_err(|_| EncodeError::Gst("buffer copy failed".to_string()))?;
-            buf.set_pts(Some(gstreamer::ClockTime::from_nseconds(self.ts)));
-            buf.set_duration(Some(gstreamer::ClockTime::from_nseconds(duration)));
         }
-        self.ts += duration;
 
         self.appsrc
             .push_buffer(buffer)
@@ -225,7 +216,8 @@ pub fn build_pipeline(
                     playlist-location={outdir}/live.m3u8 \
                     target-duration=1 max-files=30 playlist-root={root}"
     );
-    let element = gstreamer::parse_launch(&launch).map_err(|e| EncodeError::Gst(e.to_string()))?;
+    // gstreamer-rs 0.22 re-exports `parse_launch` as `parse::launch`.
+    let element = gstreamer::parse::launch(&launch).map_err(|e| EncodeError::Gst(e.to_string()))?;
     let pipeline = element
         .downcast::<gstreamer::Pipeline>()
         .map_err(|_| EncodeError::Gst("parse_launch did not yield a Pipeline".to_string()))?;
