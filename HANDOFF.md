@@ -1,14 +1,43 @@
 # HANDOFF — chromecast-tv-mirror
 
-**Status**: YELLOW — spec-02 damage tracker implemented and test-verified in
-isolation, but quality gate cannot pass: `alacritty_terminal 0.24.2` does not
-compile on this toolchain (upstream defect, see below). SPEC-DEFECT reported.
+**Status**: GREEN — spec-02 terminal cell damage tracker implemented, D2d
+semantics fixed and pinned, quality gate PASSED (fmt/check/clippy/test).
 **Date**: 2026-08-16
 **Phase**: 3 — spec-02 terminal cell damage tracker
 
 ---
 
-## 2026-08-16 — spec-02 damage tracker: code done, gate blocked by dependency defect
+## 2026-08-16 (second session) — spec-02 gate GREEN; D2d fixed post-amendment
+
+### What was DONE this session
+- **Context**: tree was clean at `bb79c16` (the D2d spec amendment, spec-only).
+  The code from `285a458` still had the D2d bug the amendment pins, and the
+  contract's `test_duplicate_last_occurrence_change_is_damaged` did not exist.
+- **`tests/cast_tv_tests.rs`**: added the D2d test FIRST (TDD red): previous
+  stores `'a'` at K, call `[(K,'a'),(K,'b')]` → K reported exactly once.
+  Confirmed red: `left: [] right: [CellKey { row: 0, col: 0 }]`.
+- **`src/damage.rs`**: rewrote `diff` to judge damage on the *final* per-key
+  value — collapse the slice into a `HashMap` (last write wins), compare each
+  key against `previous`, then adopt the new map wholesale (which also forgets
+  removed keys, D5). Dropped the `seen`-set/`HashSet` machinery that masked
+  changed later occurrences. Removed the now-unused `HashSet` import. Still
+  no unwrap/expect/panic (N2); `src/render/font.rs` untouched (N4).
+- Kept the pre-existing extra `test_duplicate_key_last_write_wins` (G6).
+
+### Outcome — gate GREEN
+- `quality-gate.sh` → fmt PASS, check PASS, clippy PASS, test PASS,
+  `QUALITY GATE: PASSED (rust)`.
+- Raw test results (unsummed): `lib` — `0 passed`; `cast_tv_tests` — `11 passed`
+  (10 contract tests + 1 extra); doc-tests — `0 passed`. All `0 failed`.
+- All 9 shell exit criteria pass (test file exists; tracker/reset present;
+  no panic calls; font.rs clean; Cargo.toml diff only the rustix std pin).
+
+### What REMAINS (next agent)
+1. After spec-02 lands: renderer diff consumption, then spec-01 modules
+   (emu, render, capture, serve, cast, encode) per `specs/01-cast-tv-terminal.md`.
+2. Milestone-1 device smoke test (operator): rust_cast media_load an HLS URL.
+
+## Previous session (2026-08-16) — spec-02: code done, gate blocked by dependency defect (RESOLVED by amendments 6a17c38/bb79c16; retained for history)
 
 ### What was DONE this session
 - **`src/lib.rs`** (NEW): declares `pub mod damage;`.

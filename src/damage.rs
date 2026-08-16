@@ -6,7 +6,7 @@
 //!
 //! Visible rows run `0` down to `-(rows-1)`, hence `row: i32`.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 
 /// Identifies one cell in the grid.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -47,27 +47,28 @@ impl DamageTracker {
     ///
     /// Keys absent from the current call are forgotten: a later reappearance
     /// counts as first-time damage. Duplicate keys within one call are
-    /// last-write-wins; each key is reported at most once.
+    /// last-write-wins: each key is reported at most once, and damage is
+    /// judged on the surviving (final) value — an unchanged first occurrence
+    /// never masks a changed later one (D2d).
     pub fn diff(&mut self, cells: &[(CellKey, CellContent)]) -> Vec<CellKey> {
-        let mut damaged = Vec::new();
-        let mut seen: HashSet<CellKey> = HashSet::with_capacity(cells.len());
-
+        // Last-write-wins: collapse duplicates to the final per-key value
+        // before comparing, so reporting and stored state agree (D2d).
+        let mut current: HashMap<CellKey, CellContent> = HashMap::with_capacity(cells.len());
         for (key, content) in cells {
-            let changed = match self.previous.get(key) {
-                Some(prev) => *prev != *content,
-                None => true,
-            };
-            // Last-write-wins on the stored state, regardless of reporting.
-            self.previous.insert(*key, *content);
-            let first_seen = seen.insert(*key);
-            if changed && first_seen {
-                damaged.push(*key);
+            current.insert(*key, *content);
+        }
+
+        let mut damaged = Vec::new();
+        for (key, content) in &current {
+            match self.previous.get(key) {
+                Some(prev) if prev == content => {}
+                _ => damaged.push(*key),
             }
         }
 
-        // Forget keys that are no longer part of the grid, so a reappearance
-        // is treated as first-time damage (D5).
-        self.previous.retain(|key, _| seen.contains(key));
+        // Replace state wholesale: keys absent from this call are forgotten,
+        // so a reappearance counts as first-time damage (D5).
+        self.previous = current;
 
         // Deterministic output order (D6): row descending, col ascending.
         damaged.sort_by(|a, b| b.row.cmp(&a.row).then(a.col.cmp(&b.col)));

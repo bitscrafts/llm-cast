@@ -88,6 +88,20 @@ fn test_new_key_is_damaged() {
     assert_eq!(damaged, vec![CellKey { row: 1, col: 3 }]);
 }
 
+/// D2d — damage is judged on the *final* per-key value: with previous
+/// storing 'a' at K, a call [(K,'a'),(K,'b')] must report K exactly once —
+/// the unchanged first occurrence must not mask the changed later one.
+#[test]
+fn test_duplicate_last_occurrence_change_is_damaged() {
+    let mut tracker = DamageTracker::new();
+    let previous = vec![cell(0, 0, 'a')];
+    let _ = tracker.diff(&previous);
+
+    let call = vec![cell(0, 0, 'a'), cell(0, 0, 'b')];
+    let damaged = tracker.diff(&call);
+    assert_eq!(damaged, vec![CellKey { row: 0, col: 0 }]);
+}
+
 /// D5a — a key present in the previous call and absent from the current one
 /// is not reported as damaged.
 #[test]
