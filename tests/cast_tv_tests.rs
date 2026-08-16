@@ -775,7 +775,9 @@ fn test_dir_store_reads_output_dir() {
         "#EXTM3U\n#EXTINF:1.0,\nseg_00000.ts\n",
     )
     .unwrap();
-    std::fs::write(dir.join("seg_00000.ts"), b"SEGMENT-00000").unwrap();
+    // hlssink2 layout: playlist in `dir/`, segments in `dir/segment/`.
+    std::fs::create_dir_all(dir.join("segment")).unwrap();
+    std::fs::write(dir.join("segment").join("seg_00000.ts"), b"SEGMENT-00000").unwrap();
 
     let store = DirStore::new(&dir);
     assert_eq!(

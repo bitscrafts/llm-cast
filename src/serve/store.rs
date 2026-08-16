@@ -88,6 +88,8 @@ impl MediaStore for DirStore {
         if name.contains('/') || name.contains('\\') || name.contains("..") {
             return None;
         }
-        std::fs::read(self.dir.join(name)).ok()
+        // hlssink2 writes segments into `dir/segment/` (the playlist stays in
+        // `dir/`); the store follows that layout.
+        std::fs::read(self.dir.join("segment").join(name)).ok()
     }
 }
