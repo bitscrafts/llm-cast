@@ -6,4 +6,4 @@
 
 pub mod term;
 
-pub use term::{Cell, Rgb, ScreenFrame};
+pub use term::{Cell, Emulator, Rgb, ScreenFrame};

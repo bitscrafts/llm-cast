@@ -355,3 +355,77 @@ fn test_rasterize_grid_to_buffer() {
         }
     }
 }
+
+// ===========================================================================
+// spec-02 part 2 (R1 capture bridge, R6 cast sender)
+// ===========================================================================
+
+use cast_tv_terminal::capture::bridge::{Bridge, BridgeError, ByteSource};
+use cast_tv_terminal::cast::{CastError, Sender};
+
+/// In-memory byte source: hands out the whole payload in one read, then EOF.
+struct FakeByteSource {
+    data: Vec<u8>,
+    pos: usize,
+}
+
+impl ByteSource for FakeByteSource {
+    fn read_available(&mut self, buf: &mut [u8]) -> Result<usize, BridgeError> {
+        let remaining = self.data.len().saturating_sub(self.pos);
+        let n = remaining.min(buf.len());
+        buf[..n].copy_from_slice(&self.data[self.pos..self.pos + n]);
+        self.pos += n;
+        Ok(n)
+    }
+}
+
+/// R1 — `Bridge::poll` feeds source bytes through the vte emulator, so the
+/// screen advances from blank after the poll.
+#[test]
+fn test_capture_bridge_feeds_bytes_to_vte() {
+    // SGR 31 (red) + "HELLO": a VT sequence that must land on the grid.
+    let source = FakeByteSource {
+        data: b"\x1b[31mHELLO".to_vec(),
+        pos: 0,
+    };
+    let mut bridge = Bridge::new(source, Emulator::new());
+
+    let fed = bridge.poll().unwrap();
+    assert_eq!(fed, b"\x1b[31mHELLO".len());
+
+    let frame = bridge.frame();
+    let hello = frame.cells.iter().find(|cell| cell.ch == 'H');
+    assert!(hello.is_some(), "emulator grid must contain the fed text");
+    assert_eq!(
+        hello.map(|cell| cell.fg),
+        Some(Rgb { r: 255, g: 0, b: 0 }),
+        "fed text must carry the SGR color"
+    );
+}
+
+/// R6 — the media/load payload is a Cast v2 LOAD request carrying the HLS
+/// URL under `media`.
+#[test]
+fn test_cast_load_url_builds_media_load() {
+    let url = "http://tv:8080/live.m3u8";
+    let payload = Sender::build_media_load_request(url);
+    assert_eq!(payload["type"], "LOAD");
+    assert_eq!(payload["media"]["contentId"], url);
+    assert_eq!(payload["media"]["streamType"], "LIVE");
+}
+
+/// R6 — an injected discovery that always fails surfaces a clear
+/// `CastError::Unreachable` promptly, with no network access.
+#[test]
+fn test_sender_reports_unreachable() {
+    let mut sender = Sender::new(Box::new(|| {
+        Err(CastError::Unreachable(
+            "no chromecast found on the LAN".into(),
+        ))
+    }));
+    let result = sender.send_load("http://tv:8080/live.m3u8");
+    match result {
+        Err(CastError::Unreachable(_)) => {}
+        other => panic!("expected CastError::Unreachable, got {other:?}"),
+    }
+}
