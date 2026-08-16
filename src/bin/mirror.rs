@@ -262,8 +262,10 @@ fn main() -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
-    let listener = match rt.block_on(tokio::net::TcpListener::bind((bind_host.as_str(), bind_port)))
-    {
+    let listener = match rt.block_on(tokio::net::TcpListener::bind((
+        bind_host.as_str(),
+        bind_port,
+    ))) {
         Ok(listener) => listener,
         Err(e) => {
             eprintln!("mirror: cannot bind {bind_host}:{bind_port}: {e}");

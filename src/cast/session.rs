@@ -95,7 +95,12 @@ pub fn send_media_load(
 /// the legacy type fetched nothing (only the cast logo), the canonical type
 /// played a 10-segment VOD end to end.
 pub fn send_load(device: &DeviceAddr, url: &str) -> Result<(), CastError> {
-    send_media_load(device, url, "application/vnd.apple.mpegurl", StreamType::Live)
+    send_media_load(
+        device,
+        url,
+        "application/vnd.apple.mpegurl",
+        StreamType::Live,
+    )
 }
 
 /// Load a single static image onto `device` — the simplest possible cast:

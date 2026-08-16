@@ -277,7 +277,12 @@ impl Emulator {
     /// CHA (CSI `n G`): move the cursor to column n, 1-based (0 or absent = 1);
     /// the row is unchanged. Clamps to the grid edge, like CUP.
     fn cha(&mut self, params: &vte::Params) {
-        let col = params.iter().next().and_then(|p| p.first()).copied().unwrap_or(1);
+        let col = params
+            .iter()
+            .next()
+            .and_then(|p| p.first())
+            .copied()
+            .unwrap_or(1);
         let col = if col == 0 { 1 } else { col };
         self.col = (col - 1).min(self.width - 1);
     }
@@ -285,7 +290,12 @@ impl Emulator {
     /// VPA (CSI `n d`): move the cursor to row n, 1-based (0 or absent = 1);
     /// the column is unchanged. Clamps to the grid edge, like CUP.
     fn vpa(&mut self, params: &vte::Params) {
-        let row = params.iter().next().and_then(|p| p.first()).copied().unwrap_or(1);
+        let row = params
+            .iter()
+            .next()
+            .and_then(|p| p.first())
+            .copied()
+            .unwrap_or(1);
         let row = if row == 0 { 1 } else { row };
         self.row = (row - 1).min(self.height - 1);
     }
@@ -294,14 +304,24 @@ impl Emulator {
     /// bottom edge the cursor clamps instead of scrolling — htop never relies
     /// on the scroll there.
     fn cnl(&mut self, params: &vte::Params) {
-        let n = params.iter().next().and_then(|p| p.first()).copied().unwrap_or(1);
+        let n = params
+            .iter()
+            .next()
+            .and_then(|p| p.first())
+            .copied()
+            .unwrap_or(1);
         self.row = (self.row + n.max(1)).min(self.height - 1);
         self.col = 0;
     }
 
     /// CPL (CSI `n F`): move up n rows (n defaults to 1), column 0.
     fn cpl(&mut self, params: &vte::Params) {
-        let n = params.iter().next().and_then(|p| p.first()).copied().unwrap_or(1);
+        let n = params
+            .iter()
+            .next()
+            .and_then(|p| p.first())
+            .copied()
+            .unwrap_or(1);
         self.row = self.row.saturating_sub(n.max(1));
         self.col = 0;
     }
@@ -311,7 +331,12 @@ impl Emulator {
     /// cells reset to default (matching ncurses clear-with-current-bg for the
     /// default black background).
     fn ed(&mut self, params: &vte::Params) {
-        let mode = params.iter().next().and_then(|p| p.first()).copied().unwrap_or(0);
+        let mode = params
+            .iter()
+            .next()
+            .and_then(|p| p.first())
+            .copied()
+            .unwrap_or(0);
         let width = self.width as usize;
         let total = width * self.height as usize;
         let cursor = self.row as usize * width + self.col as usize;
@@ -325,7 +350,12 @@ impl Emulator {
     /// EL (CSI `n K`): erase the current line. Mode 0 = cursor→EOL, 1 =
     /// BOL→cursor, 2 = whole line. The cursor does not move.
     fn el(&mut self, params: &vte::Params) {
-        let mode = params.iter().next().and_then(|p| p.first()).copied().unwrap_or(0);
+        let mode = params
+            .iter()
+            .next()
+            .and_then(|p| p.first())
+            .copied()
+            .unwrap_or(0);
         let width = self.width as usize;
         let row_start = self.row as usize * width;
         let c = self.col as usize;
@@ -342,7 +372,12 @@ impl Emulator {
         let len = self.grid.len();
         let start = start.min(len);
         let end = end.min(len);
-        for cell in self.grid.iter_mut().skip(start).take(end.saturating_sub(start)) {
+        for cell in self
+            .grid
+            .iter_mut()
+            .skip(start)
+            .take(end.saturating_sub(start))
+        {
             *cell = Cell::default();
         }
     }

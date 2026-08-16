@@ -20,6 +20,10 @@ use std::process::ExitCode;
 use cast_tv_terminal::cast::DeviceAddr;
 
 /// Map a MIME content type to the Cast stream type the DMR expects.
+/// Cast-only: without the feature the binary can never load media, so the
+/// helper (and its callers) are compiled out of the default build — keeping
+/// `cargo clippy -- -D warnings` free of dead-code lints.
+#[cfg(feature = "cast")]
 fn stream_type_for(content_type: &str) -> &'static str {
     if content_type.starts_with("image/") {
         "NONE"
@@ -74,7 +78,10 @@ fn main() -> ExitCode {
     #[cfg(feature = "cast")]
     {
         let stream_type = stream_type_for(&content_type);
-        println!("castctl: loading {content_type} ({stream_type}) {url} onto {}:8009", device.host);
+        println!(
+            "castctl: loading {content_type} ({stream_type}) {url} onto {}:8009",
+            device.host
+        );
         // Parse the derived stream type back into rust_cast's enum.
         let st = match stream_type {
             "NONE" => cast_tv_terminal::cast::session::StreamType::None,
@@ -95,7 +102,9 @@ fn main() -> ExitCode {
 
     #[cfg(not(feature = "cast"))]
     {
-        let _ = (&device, &url);
+        // Consume the parsed content type so the default build has no
+        // unused-assignment lints (the value is only meaningful with cast).
+        let _ = (&device, &url, &content_type);
         println!(
             "castctl: built without the cast feature — no session will be sent; rebuild with --features cast"
         );
