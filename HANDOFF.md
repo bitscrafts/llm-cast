@@ -14,6 +14,19 @@ pidag (53 specs).
 
 ---
 
+## 2026-08-16 — SPEC-03 RE-DISPATCH (mcp-server): READ THIS FIRST
+
+> Current work is **spec-03 (MCP-over-stdio Chromecast control server)** —
+> implemented via `pi-workhorse.sh run specs/03-mcp-server.md`. The previous
+> run exhausted its tool budget before writing code (exit 4). Its research
+> checkpoint is in **`HANDOFF-incomplete.md` — read it before this file**: it
+> has the rmcp 3.1.2 API verification, the herdr-cli argv/JSON shapes, the
+> spec-conflict note (resolved: HEAD is now fmt-clean, commits 1166c14 +
+> 0854cf5), and the implementation order for this run. HEAD is clean at commit
+> `0854cf5`.
+
+---
+
 ## 2026-08-16 (milestone-2 operator test session) — LIVE TEXT ON TV; two rendering bugs fixed
 
 ### Cast ladder — every rung proven on the device (10.10.10.208, 720p)
