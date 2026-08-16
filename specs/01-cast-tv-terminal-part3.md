@@ -7,7 +7,8 @@
 `test_hls_playlist_has_cors` (parent test 5, previously unassigned); exit
 criteria made self-contained: test-ok + file-exists + scoped no-unwrap; note
 pinned that both modules must compile under `cargo test` default features —
-encode is gated behind the `gstreamer` feature).
+encode is gated behind the `gstreamer` feature). IMPLEMENTED 2026-08-16 —
+gate GREEN, review PASS, validate 5/5, EXIT 0, no exit-7 violation.
 
 ## Overview
 
