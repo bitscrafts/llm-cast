@@ -721,3 +721,31 @@ encode was the blur; deblock off keeps thin glyph edges crisp.
   `fontdue` TTF rasterizer → 1280×720 RGBA in-container, no Xvfb/apt. Note:
   Xvfb/xterm/fonts were apt-installed — overlayfs `/` means they do NOT
   survive a container reboot; only `/root` and `/projects` persist.
+
+---
+
+## 2026-08-16 (TrueType fonts on the framebuffer) — DejaVu Sans Mono replaces bitmaps; operator-confirmed "perfect"
+
+### What changed
+The live xterm moved from X11 bitmap fonts (6×13 / 8×13) to **TrueType via
+xterm's freetype+fontconfig** (XTerm 398). Side-by-side TV A/B: 6×13 bitmap
+(left) vs DejaVu Sans Mono 13pt (right) → operator: "fonts on the right are
+much sharper", then full-screen confirmed "perfect".
+
+- `DISPLAY=:99 xterm -class XTerm -fa 'DejaVu Sans Mono' -fs 13
+  -geometry 116x32+0+0 ... -xrm 'XTerm*background: black' -xrm
+  'XTerm*foreground: white' -e htop`
+- **xterm `-fs` is in POINTS, not pixels** — 13pt ≈ 11×22 px cell (so 116×32
+  fills 1280×720). `-fs 15` → 13×25 cell, oversized/clipped. For a denser
+  ~160×55 you'd need ~7-8pt (strokes thin back toward blur); 16pt → ~94×26
+  chunkier.
+- Installed mono fonts: DejaVu Sans Mono (TTF), Noto Sans Mono (TTF), Nimbus
+  Mono PS (URW base35 — the "Adobe" PostScript Courier clone, OTF/Type1).
+- Why sharper: anti-aliased ≥2px strokes survive x264 CRF16 + `-deblock 0`,
+  where 1px bitmap strokes soften.
+
+### Next steps
+- Audio check, then pidag (53 specs).
+- Future research (see agent-memory `research/*`): HTML+JS graphical dashboard
+  on the TV; agent-managed pipeline (verdict: tmux via Claude Code Bash — no
+  MCP/ACP/A2A needed; see `research/agent-managed-pipeline-protocols`).
