@@ -10,7 +10,8 @@ required). AMENDED AGAIN 2026-08-16 after the implement pass: exit criterion 3
 grepped the literal `"media/load"`, which passes via doc comments only — the
 Cast v2 wire message type is `"type": "LOAD"`, not the string `"media/load"`.
 Criterion 3 now greps the real wire field; the implementation note was
-corrected to match.
+corrected to match. IMPLEMENTED 2026-08-16 — gate GREEN, review PASS,
+validate 4/4 (on the amended spec), EXIT 0, no exit-7 violation.
 
 ## Overview
 
