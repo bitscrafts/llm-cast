@@ -2,9 +2,11 @@
 
 - **Project**: `/projects/chromecast-tv-mirror`
 - **Priority**: the tool surface of the MCP server — the `McpServer` struct, all seven tools, and the stdio entrypoint, built on part 1's mux/foundation seams
-- **Status**: SPECIFIED — not yet dispatched · *(lifecycle: SPECIFIED → IN PROGRESS
-  on dispatch → IMPLEMENTED — awaiting review → DONE after the orchestrator
-  commits and updates HANDOFF.md)*
+- **Status**: **DONE** — implemented by pi-workhorse (deepseek-v4-flash),
+  orchestrator-reviewed and committed 2026-08-17 (commit `3f75787`); 13/13 exit
+  criteria green; HANDOFF updated. Next: part 3 (E2E stdio tests). · *(lifecycle:
+  SPECIFIED → IN PROGRESS on dispatch → IMPLEMENTED — awaiting review → DONE
+  after the orchestrator commits and updates HANDOFF.md)*
 - **Source**: operator requirement: MCP-over-stdio Chromecast control server; split of specs/03-mcp-server.md after two stalled workhorse runs (2026-08-16)
 - **Depends-On**: **`specs/03-mcp-server-part1.md` MUST have landed first** (its `src/mux/`, `src/mcp/{errors,config,runner,cast}.rs`, Cargo.toml `rmcp`+`[[test]]`, and the 6→8 meta-test are all required here). The master spec `specs/03-mcp-server.md` is the source of truth.
 
