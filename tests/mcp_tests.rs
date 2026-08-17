@@ -245,6 +245,58 @@ fn test_mux_malformed_output() {
 }
 
 // ===========================================================================
+// R2 regression — real herdr `pane run` prints NOTHING on success
+// ===========================================================================
+
+// Verified live against the tv-demo session (2026-08-17): `herdr pane run`
+// executes the command inside the pane's terminal and emits empty stdout
+// (rc=0). The fake shim masked this by returning `{"result":{}}`; send_text /
+// run_command must accept empty output and judge only the exit status.
+#[test]
+fn test_herdr_pane_run_empty_stdout_ok() {
+    let runner = Arc::new(FakeRunner::new());
+    runner.push(
+        0,
+        r#"{"id":"cli:tab:list","result":{"tabs":[
+            {"tab_id":"w1:t9","label":"agent"}],"type":"tab_list"}}"#,
+        "",
+    );
+    runner.push(
+        0,
+        r#"{"id":"cli:pane:list","result":{"panes":[
+            {"pane_id":"w1:p9","tab_id":"w1:t9"}],"type":"pane_list"}}"#,
+        "",
+    );
+    runner.push(0, r#"{"id":"cli:tab:focus","result":{}}"#, "");
+    runner.push(0, "", ""); // pane run: empty stdout, rc 0 — the live herdr shape
+    let driver = herdr_driver(runner.clone());
+    driver.send_text("hello").unwrap();
+    assert!(runner
+        .calls()
+        .iter()
+        .any(|c| { c.argv.len() >= 4 && c.argv[..4] == ["herdr", "pane", "run", "w1:p9"] }));
+
+    // and a failing pane run still surfaces as a Command error
+    let runner2 = Arc::new(FakeRunner::new());
+    runner2.push(
+        0,
+        r#"{"id":"cli:tab:list","result":{"tabs":[
+            {"tab_id":"w1:t9","label":"agent"}],"type":"tab_list"}}"#,
+        "",
+    );
+    runner2.push(
+        0,
+        r#"{"id":"cli:pane:list","result":{"panes":[
+            {"pane_id":"w1:p9","tab_id":"w1:t9"}],"type":"pane_list"}}"#,
+        "",
+    );
+    runner2.push(0, r#"{"id":"cli:tab:focus","result":{}}"#, "");
+    runner2.push(9, "", "pane run failed");
+    let err = herdr_driver(runner2).send_text("hello").unwrap_err();
+    assert!(matches!(&err, MuxError::Command { status: 9, .. }));
+}
+
+// ===========================================================================
 // R2/R4 — herdr exact argv, socket env, and inherited HERDR_* stripping
 // ===========================================================================
 

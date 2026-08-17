@@ -63,6 +63,33 @@ impl HerdrMux {
         })
     }
 
+    /// Run a fire-and-forget `herdr` command where only the exit status
+    /// matters. `pane run` writes the command's output into the pane's
+    /// terminal and prints nothing to its own stdout (verified live against
+    /// the tv-demo session 2026-08-17), so these calls must not require JSON.
+    fn herdr_ok(&self, args: &[&str]) -> Result<(), MuxError> {
+        let mut argv = Vec::with_capacity(args.len() + 1);
+        argv.push("herdr");
+        argv.extend_from_slice(args);
+        let env = vec![("HERDR_SOCKET_PATH".to_string(), self.socket.clone())];
+        let remove_env: Vec<&str> = self.herdr_env_keys.iter().map(String::as_str).collect();
+        let outcome = self
+            .runner
+            .run(&argv, &env, &remove_env)
+            .map_err(|e| MuxError::Missing {
+                detail: format!("spawn herdr: {e}"),
+            })?;
+        if outcome.status != 0 {
+            return Err(MuxError::Command {
+                command: argv.join(" "),
+                status: outcome.status,
+                stdout: outcome.stdout,
+                stderr: outcome.stderr,
+            });
+        }
+        Ok(())
+    }
+
     /// The pane in `window_id`, or a runtime error.
     fn pane_in(&self, window_id: &str) -> Result<PaneInfo, MuxError> {
         self.list_panes()?
@@ -108,7 +135,7 @@ impl Mux for HerdrMux {
         let pane = self.pane_in(&window.id)?;
         self.focus(&window.id)?;
         let script = format!("printf '%s\\n' {}", super::shell_single_quote(text));
-        let _ = self.herdr_json(&["pane", "run", &pane.id, &script])?;
+        self.herdr_ok(&["pane", "run", &pane.id, &script])?;
         Ok(())
     }
 
@@ -116,7 +143,7 @@ impl Mux for HerdrMux {
         let window = self.ensure_window(&self.agent_label)?;
         let pane = self.pane_in(&window.id)?;
         self.focus(&window.id)?;
-        let _ = self.herdr_json(&["pane", "run", &pane.id, command])?;
+        self.herdr_ok(&["pane", "run", &pane.id, command])?;
         Ok(())
     }
 
