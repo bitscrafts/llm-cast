@@ -17,8 +17,8 @@
         "CYCLE_PID_FILE": "/tmp/m2/tv_cycle.pid",
         "X_DISPLAY": ":99",
         "TV_RESOLUTION": "1280x720",
-        "TV_TERMINAL": "140x40",
-        "TV_MARGIN": "0.08"
+        "TV_TERMINAL": "161x49",
+        "TV_MARGIN": "0.05"
       }
     }
   }
