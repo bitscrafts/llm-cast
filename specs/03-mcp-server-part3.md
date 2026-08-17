@@ -89,11 +89,14 @@ flowchart TD
     SHIM -->|"invocations"| LOG["FAKE_LOG file"]
 ```
 
-The E2E test sets `MUX=herdr`, `HERDR_SOCKET_PATH` to a **fake shim** (a
-`tests/fixtures/fake-herdr.sh` script that logs every invocation to a
-`FAKE_LOG` path from env and emits canned JSON), and `HLS_DIR` to a scratch dir
-the test populates. It never touches the live stack, a real socket, or the real
-herdr.
+The E2E test sets `MUX=herdr`, `HERDR_SOCKET_PATH` to a **fake socket path**,
+`HLS_DIR` to a scratch dir the test populates, and a `PATH` whose first entry is
+a temp dir containing a `herdr` symlink → the fixture, so the herdr driver's
+`Command::new("herdr")` resolves to the shim (the driver always sets
+`HERDR_SOCKET_PATH` itself; the shim ignores it). The shim — an executable
+`tests/fixtures/fake-herdr.sh` — logs every invocation to the `$FAKE_LOG` path
+from env and emits canned herdr JSON. It never touches the live stack, a real
+socket, or the real herdr.
 
 **Key decision — the shim, not the real herdr.** The E2E must be deterministic
 and runnable on any machine; a fake script under the repo's `tests/fixtures/`
