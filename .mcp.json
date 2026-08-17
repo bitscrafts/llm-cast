@@ -16,7 +16,9 @@
         "HLS_DIR": "/tmp/m2/xhls",
         "CYCLE_PID_FILE": "/tmp/m2/tv_cycle.pid",
         "X_DISPLAY": ":99",
-        "XTERM_GEOMETRY": "116x32+0+0"
+        "TV_RESOLUTION": "1280x800",
+        "TV_TERMINAL": "140x40",
+        "TV_MARGIN": "0.10"
       }
     }
   }

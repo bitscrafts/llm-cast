@@ -33,8 +33,10 @@ master spec was authored.>
   `checked_dirs.len() == 6` ("all six module dirs must have been walked").
 - Live runtime (verified 2026-08-16): tv-demo herdr socket
   `/root/.config/herdr/sessions/tv-demo/herdr.sock`; tabs `w1:t1` (htop) +
-  `w1:t2`; HLS dir `/tmp/m2/xhls`; display `xterm … -fs 13 -geometry 116x32+0+0
-  -e /bin/sh -c 'exec herdr --session tv-demo'` on `DISPLAY=:99`. The parent env
+  `w1:t2`; HLS dir `/tmp/m2/xhls`; display `xterm …` with font/geometry computed
+  from `TV_RESOLUTION`/`TV_TERMINAL`/`TV_MARGIN` (see `src/mcp/sizing.rs`),
+  attached via `-e /bin/sh -c 'exec herdr --session tv-demo'` on `DISPLAY=:99`.
+  The parent env
   carries `HERDR_ENV=1` + `HERDR_SOCKET_PATH=<default-session socket>` — the
   nested-herdr hazard.
 - rmcp 3.1.2 (docs.rs latest): features `server`,`macros`,`transport-io`,
@@ -182,7 +184,10 @@ every `(cmd, args, env, remove_env)` call.
 (`/root/.config/herdr/sessions/tv-demo/herdr.sock`), `MUX_WORKSPACE` (w1),
 `MUX_AGENT_LABEL` (agent), `MUX_CYCLE_LABELS` (1,watch), `MUX_FOCUS_SECS` (10),
 `CAST_DEVICE` (10.10.10.208), `HLS_DIR` (`/tmp/m2/xhls`), `CYCLE_PID_FILE`
-(`/tmp/m2/tv_cycle.pid`), `X_DISPLAY` (:99), `XTERM_GEOMETRY` (116x32+0+0).
+(`/tmp/m2/tv_cycle.pid`), `X_DISPLAY` (:99), `XTERM_GEOMETRY` (`""` = computed
+from `TV_RESOLUTION`/`TV_TERMINAL`/`TV_MARGIN`; non-empty is a legacy verbatim
+override), `TV_RESOLUTION` (1280x720), `TV_TERMINAL` (116x34), `TV_MARGIN`
+(0.10).
 
 ---
 

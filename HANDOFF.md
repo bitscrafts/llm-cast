@@ -937,6 +937,11 @@ much sharper", then full-screen confirmed "perfect".
   Mono PS (URW base35 — the "Adobe" PostScript Courier clone, OTF/Type1).
 - Why sharper: anti-aliased ≥2px strokes survive x264 CRF16 + `-deblock 0`,
   where 1px bitmap strokes soften.
+- **Superseded (2026-08-17):** the hand-picked `-fs 13 -geometry 116x32+0+0`
+  pair is now the legacy override only. Default `mirror_session` computes
+  font + centered geometry from `TV_RESOLUTION`/`TV_TERMINAL`/`TV_MARGIN`
+  (`src/mcp/sizing.rs`), and `scripts/display-up.sh [WxH]` restarts
+  Xvfb/ffmpeg/hls_server at the target frame.
 
 ### Next steps
 - Audio check, then pidag (53 specs).
