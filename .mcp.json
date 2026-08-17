@@ -1,0 +1,23 @@
+{
+  "mcpServers": {
+    "chromecast": {
+      "type": "stdio",
+      "command": "/root/.local/bin/mcp-server",
+      "args": [],
+      "env": {
+        "CAST_DEVICE": "10.10.10.208",
+        "MUX": "herdr",
+        "MUX_SESSION": "tv-demo",
+        "MUX_SOCKET": "/root/.config/herdr/sessions/tv-demo/herdr.sock",
+        "MUX_WORKSPACE": "w1",
+        "MUX_AGENT_LABEL": "agent",
+        "MUX_CYCLE_LABELS": "1,watch",
+        "MUX_FOCUS_SECS": "10",
+        "HLS_DIR": "/tmp/m2/xhls",
+        "CYCLE_PID_FILE": "/tmp/m2/tv_cycle.pid",
+        "X_DISPLAY": ":99",
+        "XTERM_GEOMETRY": "116x32+0+0"
+      }
+    }
+  }
+}
