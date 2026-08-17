@@ -1185,3 +1185,390 @@ async fn test_pipeline_status_json() {
 
     let _ = std::fs::remove_dir_all(&scratch);
 }
+
+// ===========================================================================
+// spec-03 part 3 — E2E over a real stdio pipe (R1, R10, N4). Both tests spawn
+// the BUILT mcp-server binary against the fake herdr shim
+// (tests/fixtures/fake-herdr.sh, reached via a `herdr` symlink on PATH) and a
+// scratch HLS dir, then drive newline-delimited JSON-RPC over the child's
+// stdin/stdout — asserting on what the MCP client actually receives, not on
+// what the server thinks it sent.
+// ===========================================================================
+
+use serde_json::{json, Value};
+use std::os::unix::fs::symlink;
+use std::path::{Path, PathBuf};
+use std::process::Stdio;
+use std::sync::atomic::{AtomicU64, Ordering};
+use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::process::{Child, ChildStdin, ChildStdout, Command};
+
+/// The absolute path of the fake herdr shim inside the repo.
+fn fixture_herdr() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("tests")
+        .join("fixtures")
+        .join("fake-herdr.sh")
+}
+
+/// The absolute path of the built mcp-server binary (cargo sets this env var
+/// for integration tests when a `[[bin]] mcp-server` exists).
+fn mcp_server_bin() -> &'static str {
+    env!("CARGO_BIN_EXE_mcp-server")
+}
+
+/// Per-test scratch environment: bin dir (herdr symlink), scratch HLS dir,
+/// fake socket path, and the FAKE_LOG the shim appends to. Everything lives
+/// under a unique temp dir so the two tests can run in parallel.
+struct E2eFixture {
+    scratch: PathBuf,
+    hls_dir: PathBuf,
+    bin_dir: PathBuf,
+    socket: PathBuf,
+    fake_log: PathBuf,
+}
+
+impl E2eFixture {
+    /// `fail_socket=true` requests a socket path containing the `fail` marker,
+    /// which makes the shim exit non-zero on every command (R10).
+    fn new(fail_socket: bool) -> Self {
+        static SEQ: AtomicU64 = AtomicU64::new(0);
+        let seq = SEQ.fetch_add(1, Ordering::Relaxed);
+        let scratch = std::env::temp_dir().join(format!("mcp_e2e_{}_{seq}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&scratch);
+        std::fs::create_dir_all(&scratch).unwrap();
+        let hls_dir = scratch.join("hls");
+        std::fs::create_dir_all(&hls_dir).unwrap();
+        // a plausible live HLS playlist + segment so the scratch dir looks alive
+        std::fs::write(
+            hls_dir.join("live.m3u8"),
+            "#EXTM3U\n#EXT-X-VERSION:3\n#EXTINF:2,\nseg-0001.ts\n",
+        )
+        .unwrap();
+        std::fs::write(hls_dir.join("seg-0001.ts"), b"x").unwrap();
+        let bin_dir = scratch.join("bin");
+        std::fs::create_dir_all(&bin_dir).unwrap();
+        let shim = fixture_herdr();
+        assert!(
+            shim.is_file() && is_executable(&shim),
+            "fake herdr shim must exist and be executable: {}",
+            shim.display()
+        );
+        symlink(&shim, bin_dir.join("herdr")).unwrap();
+        let socket = if fail_socket {
+            scratch.join("fail.sock")
+        } else {
+            scratch.join("fake.sock")
+        };
+        Self {
+            scratch: scratch.clone(),
+            hls_dir,
+            bin_dir,
+            socket,
+            fake_log: scratch.join("fake-herdr.log"),
+        }
+    }
+}
+
+fn is_executable(path: &Path) -> bool {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::metadata(path)
+        .map(|m| m.permissions().mode() & 0o111 != 0)
+        .unwrap_or(false)
+}
+
+/// A spawned mcp-server with stdio piped, plus a background task draining
+/// stderr into a file so a verbose child can never fill the stderr pipe.
+struct E2eServer {
+    child: Child,
+    stdin: ChildStdin,
+    reader: BufReader<ChildStdout>,
+    stderr_file: PathBuf,
+}
+
+impl E2eServer {
+    async fn spawn(fx: &E2eFixture) -> Self {
+        let mut path = fx.bin_dir.display().to_string();
+        if let Ok(existing) = std::env::var("PATH") {
+            path = format!("{path}:{existing}");
+        }
+        let mut child = Command::new(mcp_server_bin())
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .env("MUX", "herdr")
+            .env("MUX_SESSION", "tv-demo")
+            .env("MUX_SOCKET", &fx.socket)
+            .env("HLS_DIR", &fx.hls_dir)
+            .env("FAKE_LOG", &fx.fake_log)
+            .env("PATH", path)
+            .kill_on_drop(true)
+            .spawn()
+            .expect("spawn mcp-server");
+        let stdin = child.stdin.take().expect("child stdin");
+        let stdout = child.stdout.take().expect("child stdout");
+        let mut stderr = child.stderr.take().expect("child stderr");
+        let stderr_file = fx.scratch.join("server-stderr.log");
+        let stderr_path = stderr_file.clone();
+        tokio::spawn(async move {
+            use tokio::io::AsyncReadExt;
+            let mut buf = String::new();
+            let _ = stderr.read_to_string(&mut buf).await;
+            let _ = std::fs::write(&stderr_path, buf);
+        });
+        Self {
+            child,
+            stdin,
+            reader: BufReader::new(stdout),
+            stderr_file,
+        }
+    }
+
+    /// Write one newline-delimited JSON-RPC request and read the response
+    /// line; any non-JSON byte on stdout is a protocol-corruption failure.
+    async fn request(&mut self, id: u64, method: &str, params: Value) -> Result<Value, String> {
+        let frame = json!({"jsonrpc": "2.0", "id": id, "method": method, "params": params});
+        self.send_raw(&frame).await;
+        self.read_response().await
+    }
+
+    /// Send a JSON-RPC notification (no response expected).
+    async fn notify(&mut self, method: &str) {
+        let frame = json!({"jsonrpc": "2.0", "method": method, "params": {}});
+        self.send_raw(&frame).await;
+    }
+
+    async fn send_raw(&mut self, frame: &Value) {
+        let mut line = serde_json::to_string(frame).unwrap();
+        line.push('\n');
+        self.stdin.write_all(line.as_bytes()).await.unwrap();
+        self.stdin.flush().await.unwrap();
+    }
+
+    /// Read exactly one line from stdout and parse it as JSON-RPC. EOF is a
+    /// dead-server failure; unparseable content is a stdout-corruption
+    /// failure; a read that never completes is a hang failure.
+    async fn read_response(&mut self) -> Result<Value, String> {
+        let mut line = String::new();
+        tokio::time::timeout(
+            std::time::Duration::from_secs(20),
+            self.reader.read_line(&mut line),
+        )
+        .await
+        .map_err(|_| {
+            format!(
+                "timed out waiting for a response; last stderr:\n{}",
+                self.stderr_tail()
+            )
+        })?
+        .map_err(|e| format!("read error: {e}"))?;
+        if line.is_empty() {
+            return Err(format!(
+                "server closed stdout (EOF) — process state:\n{}",
+                self.stderr_tail()
+            ));
+        }
+        serde_json::from_str(line.trim()).map_err(|e| {
+            format!(
+                "stdout carried a non-JSON-RPC line {line:?} ({e}); stderr:\n{}",
+                self.stderr_tail()
+            )
+        })
+    }
+
+    /// The process is still running (not exited).
+    fn is_alive(&mut self) -> bool {
+        matches!(self.child.try_wait(), Ok(None))
+    }
+
+    /// The child's stderr so far (the background drain task writes it).
+    fn stderr_tail(&self) -> String {
+        std::fs::read_to_string(&self.stderr_file).unwrap_or_default()
+    }
+
+    async fn shutdown(&mut self) {
+        let _ = self.child.kill().await;
+        let _ = self.child.wait().await;
+    }
+}
+
+/// Drive initialize → notifications/initialized → tools/list; assert the
+/// handshake contract and return the tools/list response.
+async fn e2e_handshake(server: &mut E2eServer) -> Value {
+    let init = server
+        .request(
+            1,
+            "initialize",
+            json!({
+                "protocolVersion": "2024-11-05",
+                "capabilities": {},
+                "clientInfo": {"name": "e2e-test", "version": "0.0.1"}
+            }),
+        )
+        .await
+        .expect("initialize must be answered");
+    assert_eq!(init["id"], 1, "initialize response id: {init}");
+    assert!(
+        init.get("error").is_none(),
+        "initialize must not be a JSON-RPC error: {init}"
+    );
+    assert_eq!(
+        init["result"]["serverInfo"]["name"], "cast-tv-terminal",
+        "serverInfo.name must be cast-tv-terminal: {init}"
+    );
+    assert!(
+        init["result"]["capabilities"]["tools"].is_object(),
+        "capabilities.tools must be present: {init}"
+    );
+
+    server.notify("notifications/initialized").await;
+
+    let list = server
+        .request(2, "tools/list", json!({}))
+        .await
+        .expect("tools/list must be answered");
+    assert_eq!(list["id"], 2, "tools/list response id: {list}");
+    assert!(
+        list.get("error").is_none(),
+        "tools/list must not be a JSON-RPC error: {list}"
+    );
+    list
+}
+
+/// All seven tool names, in any order.
+fn assert_all_seven_tools(list: &Value) {
+    let tools = list["result"]["tools"]
+        .as_array()
+        .expect("tools/list result.tools must be an array");
+    let mut names: Vec<&str> = tools
+        .iter()
+        .map(|t| t["name"].as_str().expect("tool name must be a string"))
+        .collect();
+    names.sort_unstable();
+    assert_eq!(
+        names,
+        [
+            "cast_text",
+            "cast_url",
+            "mirror_session",
+            "pipeline_status",
+            "restore",
+            "run_command",
+            "set_font_size"
+        ],
+        "tools/list must return all seven tools: {list}"
+    );
+}
+
+// ===========================================================================
+// R1 — the built binary over a real stdio pipe: handshake, seven tools, and a
+// cast_text whose child invocations land in FAKE_LOG (N4: stdout stayed pure
+// JSON-RPC or the line parser above would have failed).
+// ===========================================================================
+
+#[tokio::test]
+async fn test_e2e_stdio_handshake() {
+    let fx = E2eFixture::new(false);
+    let mut server = E2eServer::spawn(&fx).await;
+
+    let list = e2e_handshake(&mut server).await;
+    assert_all_seven_tools(&list);
+
+    let call = server
+        .request(
+            3,
+            "tools/call",
+            json!({"name": "cast_text", "arguments": {"text": "hello from e2e"}}),
+        )
+        .await
+        .expect("cast_text must be answered");
+    assert_eq!(call["id"], 3, "tools/call response id: {call}");
+    assert!(
+        call.get("error").is_none(),
+        "cast_text must not be a JSON-RPC error: {call}"
+    );
+    assert_ne!(
+        call["result"]["isError"], true,
+        "cast_text must be a success result: {call}"
+    );
+    let text = call["result"]["content"][0]["text"]
+        .as_str()
+        .unwrap_or_else(|| panic!("cast_text content text: {call}"));
+    assert!(
+        text.contains("text sent to window"),
+        "success text must name the window: {text}"
+    );
+
+    // the mux commands really ran: FAKE_LOG has the pane run invocation
+    let log = std::fs::read_to_string(&fx.fake_log)
+        .unwrap_or_else(|_| panic!("FAKE_LOG must exist at {}", fx.fake_log.display()));
+    assert!(
+        log.lines()
+            .any(|l| l.contains("pane run") && l.contains("hello from e2e")),
+        "FAKE_LOG must contain the cast_text pane run invocation:\n{log}"
+    );
+    assert!(
+        log.lines().any(|l| l == "tab focus w1:t1"),
+        "FAKE_LOG must contain the focus invocation:\n{log}"
+    );
+
+    assert!(server.is_alive(), "the server must still be alive");
+    let _ = std::fs::remove_dir_all(&fx.scratch);
+    server.shutdown().await;
+}
+
+// ===========================================================================
+// R10 (ACCEPTANCE) — a failing tool call must yield a well-formed is_error
+// result (never a JSON-RPC error, never a hang), and a subsequent tools/list
+// must still be answered: the process survived. A server that println!s to
+// stdout or panics on a missing socket fails this test.
+// ===========================================================================
+
+#[tokio::test]
+async fn test_e2e_tool_error_keeps_server_alive() {
+    let fx = E2eFixture::new(true); // socket path carries the `fail` marker
+    let mut server = E2eServer::spawn(&fx).await;
+
+    let list = e2e_handshake(&mut server).await;
+    assert_all_seven_tools(&list);
+
+    let call = server
+        .request(
+            3,
+            "tools/call",
+            json!({"name": "cast_text", "arguments": {"text": "boom"}}),
+        )
+        .await
+        .expect("the failing cast_text must still be answered, not hang");
+    assert_eq!(call["id"], 3, "tools/call response id: {call}");
+    assert!(
+        call.get("error").is_none(),
+        "a failing tool must be a tool result, NOT a JSON-RPC error: {call}"
+    );
+    assert_eq!(
+        call["result"]["isError"], true,
+        "the failing call must carry isError=true: {call}"
+    );
+    let text = call["result"]["content"][0]["text"]
+        .as_str()
+        .unwrap_or_else(|| panic!("is_error content text: {call}"));
+    assert!(
+        text.contains("mux command failed") || text.contains("failed"),
+        "the error text must describe the failure: {text}"
+    );
+
+    // the process survived: a second tools/list is answered
+    let list2 = server
+        .request(4, "tools/list", json!({}))
+        .await
+        .expect("tools/list after the failure must still be answered");
+    assert_eq!(list2["id"], 4, "post-failure tools/list id: {list2}");
+    assert_all_seven_tools(&list2);
+
+    assert!(
+        server.is_alive(),
+        "the server process must be alive after the failed call"
+    );
+    let _ = std::fs::remove_dir_all(&fx.scratch);
+    server.shutdown().await;
+}

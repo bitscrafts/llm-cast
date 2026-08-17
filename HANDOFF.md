@@ -1,12 +1,90 @@
 # HANDOFF — chromecast-tv-mirror
 
-**Status**: GREEN — **spec-03 part 2 (mcp-server surface) LANDED** (2026-08-17):
-McpServer struct + 7 tools + `serve_stdio()`; gate + 13/13 exit criteria green;
-50/50 tests. Prior baseline: MILESTONE-2 operator test PASS (2026-08-16) — the
-`mirror` pipeline shows live text on the TV (image/jpeg → MP4 → VOD HLS → LIVE
-HLS → live mirror text), gate GREEN 28/28 with `--features cast,gstreamer`.
+**Status**: GREEN — **spec-03 part 3 (E2E stdio + R10 acceptance) LANDED**
+(2026-08-17): both E2E tests spawn the real `mcp-server` binary against the
+fake herdr shim; wrong-version-first proof done (stub println+unwrap failed
+both, fixed version passes); 52/52 tests; gate exit 0; all 13 exit criteria
+green. Prior baseline: spec-03 part 2 landed (McpServer + 7 tools +
+`serve_stdio()`), gate 13/13.
 
 ---
+
+## 2026-08-17 — SPEC-03 PART 3 LANDED: E2E over a real stdio pipe (R1/R10/N4)
+
+### What was DONE this session
+- **TDD first**: appended the two part-3 contract tests to `tests/mcp_tests.rs`
+  (only tracked change; `git diff` touches nothing else — no `src/` file,
+  `Cargo.toml`, or spec).
+  - `test_e2e_stdio_handshake` (R1): spawns `env!("CARGO_BIN_EXE_mcp-server")`
+    with `MUX=herdr`, `MUX_SOCKET` → fake path, `HLS_DIR` → scratch, `PATH`
+    first entry = temp dir holding a `herdr` symlink → the shim, `FAKE_LOG` →
+    scratch; drives newline JSON-RPC `initialize` (asserts
+    `serverInfo.name == "cast-tv-terminal"` + `capabilities.tools` present) →
+    `notifications/initialized` → `tools/list` (all 7 names) → `tools/call
+    cast_text` (success text names the window AND `FAKE_LOG` contains the
+    `pane run` + `tab focus w1:t1` invocations) → process alive.
+  - `test_e2e_tool_error_keeps_server_alive` (R10 ACCEPTANCE): same spawn with
+    `MUX_SOCKET` = a path carrying the `fail` marker → shim exits non-zero on
+    every command → cast_text answers a well-formed `isError:true` tool result
+    (NOT a JSON-RPC error, NOT a hang), then `tools/list` is answered again
+    and `try_wait()` proves the process is alive.
+  - E2E harness: `E2eFixture` (unique scratch under temp_dir: bin symlink +
+    HLS playlist + fake log) + `E2eServer` (tokio child, piped stdio, stderr
+    drained to a file, 20 s read timeouts, kill_on_drop). Every stdout line is
+    parsed as JSON — any non-protocol byte fails the test (N4).
+- **`tests/fixtures/fake-herdr.sh`** (NEW, executable): logs every invocation
+  to `$FAKE_LOG`, answers the driver's contract (`tab list` → existing `agent`
+  tab `w1:t1`; `pane list` → `w1:p1`; create/focus/close/run → empty result);
+  any `HERDR_SOCKET_PATH` containing `fail` → exits 1 with a missing-socket
+  error on stderr. Never touches the live stack (G7).
+- **Wrong-version-first proof (spec prose criterion 1)** — stub `cast_text`
+  with `println!("handling cast_text")` + `.unwrap()` on the mux call:
+  - `test_e2e_stdio_handshake` → FAILED:
+    `cast_text must be answered: "stdout carried a non-JSON-RPC line \"handling cast_text\\n\" (expected value at line 1 column 1)"`
+  - `test_e2e_tool_error_keeps_server_alive` → FAILED:
+    `the failing cast_text must still be answered, not hang: "stdout carried a non-JSON-RPC line \"handling cast_text\\n\" ..."`
+  - Reverted the stub (no `src/` diff remains); fixed version → both PASS.
+
+### Outcome — gate GREEN (exit 0)
+```
+  cargo fmt --check            PASS
+  cargo check                  PASS
+  cargo clippy -D warnings     PASS
+  cargo test                   PASS
+QUALITY GATE: PASSED (rust)
+```
+Raw (unsummed): `cargo test` → lib 0/0, castctl 0/0, mcp-server 0/0, mirror
+0/0, `tests/cast_tv_tests.rs`: `test result: ok. 34 passed; 0 failed; 0
+ignored; 0 measured; 0 filtered out`, `tests/mcp_tests.rs`: `test result: ok.
+18 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out`. Non-vacuous
+greps: `test_e2e_stdio_handshake` → `ok. 1 passed`, `test_e2e_tool_error_keeps_server_alive`
+→ `ok. 1 passed`, `test_no_production_unwrap` → `ok. 1 passed` (8 dirs).
+
+### Exit criteria — all 14 pass
+`cargo build` / `--features cast` / `--features cast,gstreamer` compile;
+`cargo test` green; the three non-vacuous test greps exit 0; shim exists +
+executable; clippy/fmt clean; no `println!`/`print!` and no
+`/projects/...|/root/` in `src/mcp src/mux src/bin/mcp-server.rs`;
+`git diff --name-only` = `tests/mcp_tests.rs` only (fixture untracked) — no
+prior module or spec touched.
+
+### Spec notes (no defects)
+- rmcp 3.1.2 stdio is newline-delimited JSON-RPC (verified in the crate's
+  `transport/async_rw.rs` Lines codec) — the E2E's line-based framing matches.
+- `#[tool_router]` always injects `capabilities.tools` (list_changed) into the
+  initialize result — the `capabilities.tools` assert is stable.
+
+### What REMAINS (next)
+1. Orchestrator: commit part 3, move master spec-03 status to IMPLEMENTED.
+2. **Phase 8 — live TV verification** (orchestrator/operator step): `claude
+   mcp add` against the built binary, then cast_url/cast_text/set_font_size/
+   mirror_session/restore on the TV + tmux parity. NOT part of any spec
+   dispatch.
+3. (Log) EXPERIMENT LOG: append this session's observation — rmcp's line
+   parser rejects any non-JSON stdout byte instantly (E2E caught the stub
+   println), confirming N4's stdio discipline is enforceable by test.
+
+
 
 ## 2026-08-17 — SPEC-03 PART 2 LANDED: McpServer struct + 7 tools + stdio entrypoint
 
