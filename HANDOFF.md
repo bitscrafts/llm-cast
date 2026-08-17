@@ -1,16 +1,100 @@
 # HANDOFF — chromecast-tv-mirror
 
-**Status**: GREEN — **MILESTONE-2 operator test PASS** (2026-08-16): the full
-`mirror` pipeline (capture→emu→render→encode→serve→cast) now displays a live
-text pane **correctly on the TV** — clean multi-line, left-aligned,
-right-way-round text, operator-confirmed ("text is ok"). Cast ladder proven
-on-device: image/jpeg → MP4 → VOD HLS → **LIVE HLS** → live mirror text.
-Gate GREEN — 28/28 tests with `--features cast,gstreamer`.
-**Date**: 2026-08-16
-**Phase**: 9 — milestone-2 PASS. Two rendering bugs found & fixed this session
-(LF column reset; font LSB bit order — commits a6ab372, 995f7ef). Next: real
-herdr/tmux live pane as `--source` (dynamic content), then audio check, then
-pidag (53 specs).
+**Status**: GREEN — **spec-03 part 2 (mcp-server surface) LANDED** (2026-08-17):
+McpServer struct + 7 tools + `serve_stdio()`; gate + 13/13 exit criteria green;
+50/50 tests. Prior baseline: MILESTONE-2 operator test PASS (2026-08-16) — the
+`mirror` pipeline shows live text on the TV (image/jpeg → MP4 → VOD HLS → LIVE
+HLS → live mirror text), gate GREEN 28/28 with `--features cast,gstreamer`.
+
+---
+
+## 2026-08-17 — SPEC-03 PART 2 LANDED: McpServer struct + 7 tools + stdio entrypoint
+
+### What was DONE this session
+- **TDD first**: appended 7 part-2 contract tests to `tests/mcp_tests.rs`
+  (`test_tool_router_registers_all_tools`, `test_cast_url_forwards_to_port`,
+  `test_set_font_size_relaunch`, `test_set_font_size_rejects_range`,
+  `test_restore_focus_and_cycle`, `test_mirror_session_relaunch`,
+  `test_pipeline_status_json`) using `FakeRunner`/`FakeMux`/`FakeCastPort`
+  (first run: 15/16 red — status test caught a pgrep-fetch-ordering bug).
+- **`src/mcp/mod.rs`** (REPLACED, keeps part-1 decls + adds `display`/`status`):
+  `McpServer { Arc<Config>, Arc<dyn Runner>, Arc<dyn Mux>, CastPort }`,
+  `#[tool_router(vis = "pub")]` over an inherent impl with all 7 `#[tool]`
+  methods, `#[tool_handler(name = "cast-tv-terminal", ...)] impl ServerHandler`,
+  `serve_stdio()` (`serve(stdio()).await?.waiting().await?`). The ONLY file
+  importing rmcp. `use rmcp::schemars;` needed so the JsonSchema derive finds
+  `schemars::` paths; tool fn `version` attr can't take `env!()` (macro-quote
+  limitation) — hardcoded `"0.1.0"` matching Cargo.toml.
+- **`src/mcp/display.rs`** (NEW, R6/R8/R9): `set_font_size` (pts 6..=32
+  validation → kill xterm via `pgrep -f herdr-tv` → relaunch with `-fs`,
+  `DISPLAY=:99`, geometry, `HERDR_*` removed), `restore` (kill pid-file pid +
+  `pgrep` fallback → optional respawn of detached `bash -c while … tab focus
+  w1:tN … sleep 10` loop with the socket baked in → write pid → `mux.focus`
+  first cycle window; `restart_cycle=false` → no spawn), `mirror_session`
+  (kill xterm → optional `mux.focus(window)` → spawn xterm with the driver's
+  `attach_shell`: `exec herdr --session '<name>'` / `exec tmux attach -t
+  '<name>' -r`). All spawns via the `Runner` (null stdio, own process group,
+  env stripped) — never inline `Command`.
+- **`src/mcp/status.rs`** (NEW, R7): `pipeline_status_json()` — mux session +
+  windows/panes, processes (Xvfb, display xterm incl. `-fs` parsed from its
+  `pgrep -af` cmdline, ffmpeg, hls_server, cycle loop), HLS dir (playlist
+  presence + 5-line tail, segment count, newest segment by mtime). Every
+  piece degrades to null; no unwrap/panic. Gotcha: pgrep fetch order must
+  match JSON field order (json! evaluates bindings first) — test caught it.
+- **`src/bin/mcp-server.rs`** (NEW, R1): stderr-only `log` logger,
+  `Config::from_env()`, `mux::open()`, `production_cast_port()`, wiring,
+  `serve_stdio()`. `log::set_logger` error mapped (SetLoggerError isn't
+  `std::error::Error`).
+- **Cargo.toml / src/lib.rs / src/mux / part-1 files: untouched** (N2).
+
+### Outcome — gate GREEN (exit 0)
+```
+  cargo fmt --check            PASS
+  cargo check                  PASS
+  cargo clippy -D warnings     PASS
+  cargo test                   PASS
+QUALITY GATE: PASSED (rust)
+```
+Raw (unsummed): `cargo test` → lib 0/0, castctl 0/0, mcp-server 0/0, mirror
+0/0, `tests/cast_tv_tests.rs`: `test result: ok. 34 passed; 0 failed; 0
+ignored; 0 measured; 0 filtered out`, `tests/mcp_tests.rs`: `test result: ok.
+16 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out`.
+Non-vacuous greps: `test_tool_router_registers_all_tools` → `ok. 1 passed`,
+`test_no_production_unwrap` → `ok. 1 passed` (8 dirs, no unwrap in the new
+files).
+
+### Exit criteria — all pass (after orchestrator fixes)
+The workhorse handed off at **12/13**: criterion 9 `cargo clippy --all-targets
+-- -D warnings` failed on a `type_complexity` lint in `test_cast_url_forwards_to_port`
+(`Arc<Mutex<Vec<(String, String, String, StreamKind)>>>` — its own gate ran
+`cargo clippy` without `--all-targets`, which skips the integration tests). The
+orchestrator fixed it with a `CastRecord` type alias, and also fixed the
+review-flagged latent tmux bug in `cycle_loop_argv` (it built herdr `w1:tN`
+window ids for the tmux driver too → `tmux select-window -t tv-demo:w1:t1`;
+now 0-based indices for tmux). Re-run: all 13 green.
+The rest as handed off: `cargo build`, `--features cast`, `--features
+cast,gstreamer` all compile; the three non-vacuous test greps exit 0;
+`src/bin/mcp-server.rs` present + `serve` in mod.rs; no
+`println!`/`print!` in src/mcp|src/mux|bin; no
+`/projects/chromecast-tv-mirror|/root/` in those dirs; `git diff --name-only`
+touches only `src/mcp/{mod,display,status}.rs`, `src/bin/mcp-server.rs`,
+`tests/mcp_tests.rs`. lib.rs module list unchanged (exactly capture, cast,
+damage, emu, encode, pipeline, render, serve, mcp, mux).
+
+### Spec notes (no defects)
+- rmcp 3.1.2 `#[tool_handler]` `version` attr does not accept `env!()` (macro
+  can't parse it) — used the literal `"0.1.0"` (crate version).
+- `#[tool]` fns must be `pub` for the integration tests to call them
+  (external-crate visibility), matching the TDD contract's direct-call rows.
+- `Runner` signature `remove_env: &[&str]` requires owned `herdr_env_keys()`
+  to be bound to a local before slicing (E0716) — cosmetic, not spec-relevant.
+
+### What REMAINS (next agent)
+1. **Part 3** (`specs/03-mcp-server-part3.md`): E2E stdio tests
+   (`test_e2e_stdio_handshake`, `test_e2e_tool_error_keeps_server_alive`)
+   driving the real built binary — the R1/R10 acceptance proof.
+2. Then phase-8 live TV verification (orchestrator) + tmux parity check.
+
 
 ---
 

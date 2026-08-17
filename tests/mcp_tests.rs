@@ -7,13 +7,20 @@
 use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
 
-use cast_tv_terminal::mcp::cast::{production_cast_port, stream_type_for, CastUrlArgs, StreamKind};
+use cast_tv_terminal::mcp::cast::{
+    production_cast_port, stream_type_for, CastPort, CastUrlArgs, StreamKind,
+};
 use cast_tv_terminal::mcp::config::Config;
 use cast_tv_terminal::mcp::errors::McpServerError;
 use cast_tv_terminal::mcp::runner::{CommandOutcome, ProcRunner, Runner};
+use cast_tv_terminal::mcp::{
+    CastUrlParams, McpServer, MirrorSessionParams, RestoreParams, SetFontSizeParams,
+};
 use cast_tv_terminal::mux::herdr::HerdrMux;
 use cast_tv_terminal::mux::tmux::TmuxMux;
-use cast_tv_terminal::mux::{open, shell_single_quote, Mux, MuxError};
+use cast_tv_terminal::mux::{open, shell_single_quote, Mux, MuxError, PaneInfo, WindowInfo};
+use rmcp::handler::server::wrapper::Parameters;
+use rmcp::model::CallToolResult;
 
 /// Serializes tests that mutate the process environment (parallel test threads
 /// share one process env).
@@ -483,4 +490,698 @@ fn wait_for_file(path: &std::path::Path) {
         }
         std::thread::sleep(std::time::Duration::from_millis(5));
     }
+}
+
+// ===========================================================================
+// spec-03 part 2 — the McpServer tool surface (R1-R10). Every test uses the
+// fakes; NO test spawns a real process, touches a real socket, or kills a
+// real xterm (G7).
+// ===========================================================================
+
+/// FakeMux: records tool-level calls, serves scripted windows/panes and an
+/// attach shell, and can be told to fail (for degradation paths).
+struct FakeMux {
+    windows: Mutex<Vec<WindowInfo>>,
+    panes: Mutex<Vec<PaneInfo>>,
+    log: Mutex<Vec<String>>,
+    attach: Mutex<String>,
+    fail: Mutex<bool>,
+}
+
+impl FakeMux {
+    fn new() -> Self {
+        Self {
+            windows: Mutex::new(Vec::new()),
+            panes: Mutex::new(Vec::new()),
+            log: Mutex::new(Vec::new()),
+            attach: Mutex::new(String::new()),
+            fail: Mutex::new(false),
+        }
+    }
+
+    fn set_windows(&self, windows: Vec<WindowInfo>) {
+        *self.windows.lock().unwrap() = windows;
+    }
+
+    fn set_panes(&self, panes: Vec<PaneInfo>) {
+        *self.panes.lock().unwrap() = panes;
+    }
+
+    fn set_fail(&self, fail: bool) {
+        *self.fail.lock().unwrap() = fail;
+    }
+
+    fn calls(&self) -> Vec<String> {
+        self.log.lock().unwrap().clone()
+    }
+}
+
+impl Mux for FakeMux {
+    fn ensure_window(&self, label: &str) -> Result<WindowInfo, MuxError> {
+        self.log
+            .lock()
+            .unwrap()
+            .push(format!("ensure_window:{label}"));
+        Ok(WindowInfo {
+            id: "w1:t9".to_string(),
+            label: label.to_string(),
+        })
+    }
+
+    fn focus(&self, window: &str) -> Result<(), MuxError> {
+        self.log.lock().unwrap().push(format!("focus:{window}"));
+        Ok(())
+    }
+
+    fn send_text(&self, text: &str) -> Result<(), MuxError> {
+        self.log.lock().unwrap().push(format!("send_text:{text}"));
+        Ok(())
+    }
+
+    fn run_command(&self, command: &str) -> Result<(), MuxError> {
+        self.log
+            .lock()
+            .unwrap()
+            .push(format!("run_command:{command}"));
+        Ok(())
+    }
+
+    fn close_window(&self, window: &str) -> Result<(), MuxError> {
+        self.log
+            .lock()
+            .unwrap()
+            .push(format!("close_window:{window}"));
+        Ok(())
+    }
+
+    fn list_windows(&self) -> Result<Vec<WindowInfo>, MuxError> {
+        self.log.lock().unwrap().push("list_windows".to_string());
+        if *self.fail.lock().unwrap() {
+            return Err(MuxError::Runtime {
+                detail: "scripted failure".to_string(),
+            });
+        }
+        Ok(self.windows.lock().unwrap().clone())
+    }
+
+    fn list_panes(&self) -> Result<Vec<PaneInfo>, MuxError> {
+        self.log.lock().unwrap().push("list_panes".to_string());
+        if *self.fail.lock().unwrap() {
+            return Err(MuxError::Runtime {
+                detail: "scripted failure".to_string(),
+            });
+        }
+        Ok(self.panes.lock().unwrap().clone())
+    }
+
+    fn attach_shell(&self, session: &str) -> Result<String, MuxError> {
+        self.log
+            .lock()
+            .unwrap()
+            .push(format!("attach_shell:{session}"));
+        let scripted = self.attach.lock().unwrap().clone();
+        if scripted.is_empty() {
+            Ok(format!(
+                "exec herdr --session {}",
+                shell_single_quote(session)
+            ))
+        } else {
+            Ok(scripted)
+        }
+    }
+}
+
+/// The config the part-2 tests wire up; defaults match the live tv-demo stack
+/// except the pid file, which every test overrides with a scratch path.
+fn test_config() -> Config {
+    Config {
+        mux: "herdr".to_string(),
+        mux_session: "tv-demo".to_string(),
+        mux_socket: "/run/herdr/tv-demo.sock".to_string(),
+        mux_workspace: "w1".to_string(),
+        mux_agent_label: "agent".to_string(),
+        mux_cycle_labels: "1,watch".to_string(),
+        mux_focus_secs: 10,
+        cast_device: "10.10.10.208".to_string(),
+        hls_dir: "/tmp/m2/xhls".to_string(),
+        cycle_pid_file: "/tmp/m2/tv_cycle.pid".to_string(),
+        x_display: ":99".to_string(),
+        xterm_geometry: "116x32+0+0".to_string(),
+    }
+}
+
+/// A cast port that must never be called in this test.
+fn unused_cast_port() -> CastPort {
+    Arc::new(|_args: CastUrlArgs| Err(McpServerError::Cast("unused in this test".to_string())))
+}
+
+/// The success-text of a tool result, or a panic with the block when absent.
+fn content_text(result: &CallToolResult) -> String {
+    match &result.content[0] {
+        rmcp::model::ContentBlock::Text(t) => t.text.clone(),
+        other => panic!("unexpected content block: {other:?}"),
+    }
+}
+
+// ===========================================================================
+// R1,R2 — all seven tools registered on the router
+// ===========================================================================
+
+#[test]
+fn test_tool_router_registers_all_tools() {
+    let router = McpServer::tool_router();
+    let names = [
+        "cast_url",
+        "cast_text",
+        "run_command",
+        "set_font_size",
+        "pipeline_status",
+        "restore",
+        "mirror_session",
+    ];
+    for name in names {
+        assert!(router.has_route(name), "missing tool route for {name}");
+    }
+    let router_tools = router.list_all();
+    let listed: Vec<&str> = router_tools.iter().map(|t| t.name.as_ref()).collect();
+    assert_eq!(listed.len(), 7, "exactly seven tools, got {listed:?}");
+}
+
+// ===========================================================================
+// R3 — cast_url forwards url + content type to the CastPort closure
+// ===========================================================================
+
+/// What `cast_url` is recorded to have forwarded: `(device@port, url, ct, st)`.
+type CastRecord = (String, String, String, StreamKind);
+
+#[tokio::test]
+async fn test_cast_url_forwards_to_port() {
+    let config = Arc::new(test_config());
+    let recorded: Arc<Mutex<Vec<CastRecord>>> = Arc::new(Mutex::new(Vec::new()));
+    let device = config.cast_device.clone();
+    let recorded_capture = recorded.clone();
+    let port: CastPort = Arc::new(move |args: CastUrlArgs| {
+        recorded_capture.lock().unwrap().push((
+            format!("{device}@8009"),
+            args.url.clone(),
+            args.content_type.clone(),
+            stream_type_for(&args.content_type),
+        ));
+        Ok(format!(
+            "cast requested to {device}: {} ({})",
+            args.url, args.content_type
+        ))
+    });
+
+    let server = McpServer::new(
+        config,
+        Arc::new(FakeRunner::new()),
+        Arc::new(FakeMux::new()),
+        port,
+    );
+    let result = server
+        .cast_url(Parameters(CastUrlParams {
+            url: "http://10.10.10.217:18080/live.m3u8".to_string(),
+            content_type: "application/vnd.apple.mpegurl".to_string(),
+        }))
+        .await
+        .unwrap();
+
+    assert!(
+        !result.is_error.unwrap_or(false),
+        "must be a success result"
+    );
+    assert!(
+        content_text(&result).contains("cast requested to"),
+        "the port's success text must be surfaced: {:?}",
+        result.content
+    );
+    let log = recorded.lock().unwrap();
+    assert_eq!(log.len(), 1, "the port must be called exactly once");
+    let (host, url, ct, st) = &log[0];
+    assert_eq!(host, "10.10.10.208@8009");
+    assert_eq!(url, "http://10.10.10.217:18080/live.m3u8");
+    assert_eq!(ct, "application/vnd.apple.mpegurl");
+    assert_eq!(*st, StreamKind::Live);
+}
+
+// ===========================================================================
+// R6 — set_font_size relaunch sequence and range rejection
+// ===========================================================================
+
+// The guard must stay held across the `.await`: the env vars set below must
+// remain stable while `set_font_size_impl` reads `herdr_env_keys()`. No
+// awaited future ever locks `ENV_MUTEX` again, so this cannot deadlock.
+#[allow(clippy::await_holding_lock)]
+#[tokio::test]
+async fn test_set_font_size_relaunch() {
+    let _guard = ENV_MUTEX.lock().unwrap();
+    std::env::set_var("HERDR_ENV", "1");
+    std::env::set_var("HERDR_SOCKET_PATH", "/ops/operator-default.sock");
+
+    let runner = Arc::new(FakeRunner::new());
+    runner.push(0, "1234", ""); // pgrep -f herdr-tv → one xterm
+    runner.push(0, "", ""); // kill 1234
+    runner.push(0, "", ""); // xterm spawn_detached
+
+    let server = McpServer::new(
+        Arc::new(test_config()),
+        runner.clone(),
+        Arc::new(FakeMux::new()),
+        unused_cast_port(),
+    );
+    let result = server
+        .set_font_size(Parameters(SetFontSizeParams { pts: 15 }))
+        .await
+        .unwrap();
+    assert!(
+        !result.is_error.unwrap_or(false),
+        "must be a success result"
+    );
+    assert!(content_text(&result).contains("font size 15"));
+
+    let calls = runner.calls();
+    assert_eq!(calls[0].argv, ["pgrep", "-f", "herdr-tv"]);
+    assert_eq!(calls[1].argv, ["kill", "1234"]);
+    let spawn = &calls[2];
+    assert_eq!(spawn.argv[0], "xterm", "the xterm is relaunched: {spawn:?}");
+    assert!(
+        spawn.argv.windows(2).any(|w| w[0] == "-fs" && w[1] == "15"),
+        "spawn argv must carry -fs 15: {:?}",
+        spawn.argv
+    );
+    assert!(
+        spawn.argv.iter().any(|a| a == "116x32+0+0"),
+        "spawn argv must carry the geometry: {:?}",
+        spawn.argv
+    );
+    assert!(
+        spawn
+            .env
+            .contains(&("DISPLAY".to_string(), ":99".to_string())),
+        "xterm must get DISPLAY=:99: {:?}",
+        spawn.env
+    );
+    assert!(
+        spawn.remove_env.contains(&"HERDR_ENV".to_string()),
+        "HERDR_ENV must be removed from the child: {:?}",
+        spawn.remove_env
+    );
+    assert!(
+        spawn.remove_env.contains(&"HERDR_SOCKET_PATH".to_string()),
+        "HERDR_SOCKET_PATH must be removed from the child: {:?}",
+        spawn.remove_env
+    );
+
+    std::env::remove_var("HERDR_ENV");
+    std::env::remove_var("HERDR_SOCKET_PATH");
+}
+
+#[tokio::test]
+async fn test_set_font_size_rejects_range() {
+    let runner = Arc::new(FakeRunner::new()); // empty queue: any call would error
+    let server = McpServer::new(
+        Arc::new(test_config()),
+        runner.clone(),
+        Arc::new(FakeMux::new()),
+        unused_cast_port(),
+    );
+    for pts in [100, 5, 0, -1] {
+        let result = server
+            .set_font_size(Parameters(SetFontSizeParams { pts }))
+            .await
+            .unwrap();
+        assert!(
+            result.is_error.unwrap_or(false),
+            "pts={pts} must be an is_error result"
+        );
+        assert!(
+            content_text(&result).contains("6..=32"),
+            "the error must name the valid range: {:?}",
+            result.content
+        );
+    }
+    assert!(
+        runner.calls().is_empty(),
+        "no side effects for out-of-range pts"
+    );
+}
+
+// ===========================================================================
+// R8 — restore: kill the cycle loop, respawn it, write the pid, focus
+// ===========================================================================
+
+#[tokio::test]
+async fn test_restore_focus_and_cycle() {
+    let pid_file = std::env::temp_dir().join(format!("mcp_cycle_{}.pid", std::process::id()));
+    let _ = std::fs::remove_file(&pid_file);
+    std::fs::write(&pid_file, "9999\n").unwrap();
+
+    let mut config = test_config();
+    config.cycle_pid_file = pid_file.display().to_string();
+
+    let runner = Arc::new(FakeRunner::new());
+    runner.push(0, "", ""); // kill 9999 (pid file)
+    runner.push(0, "8888", ""); // pgrep -f cycle loop → one match
+    runner.push(0, "", ""); // kill 8888
+    runner.push(0, "", ""); // spawn_detached cycle loop
+
+    let mux = Arc::new(FakeMux::new());
+    let server = McpServer::new(
+        Arc::new(config),
+        runner.clone(),
+        mux.clone(),
+        unused_cast_port(),
+    );
+    let result = server
+        .restore(Parameters(RestoreParams {
+            restart_cycle: true,
+        }))
+        .await
+        .unwrap();
+    assert!(
+        !result.is_error.unwrap_or(false),
+        "must be a success result"
+    );
+
+    let calls = runner.calls();
+    assert_eq!(calls.len(), 4, "kill+pgrep+kill+spawn: {calls:?}");
+    assert_eq!(calls[0].argv, ["kill", "9999"], "pid file pid killed first");
+    assert_eq!(
+        calls[1].argv,
+        ["pgrep", "-f", "herdr tab focus"],
+        "pgrep fallback for the cycle loop"
+    );
+    assert_eq!(calls[2].argv, ["kill", "8888"]);
+    assert_eq!(calls[3].argv[0..2], ["bash", "-c"]);
+    let loop_cmd = &calls[3].argv[2];
+    assert!(
+        loop_cmd.contains("/run/herdr/tv-demo.sock"),
+        "the loop must carry the socket: {loop_cmd}"
+    );
+    assert!(
+        loop_cmd.contains("tab focus w1:t1"),
+        "the loop must focus the first cycle tab: {loop_cmd}"
+    );
+    assert!(
+        loop_cmd.contains("sleep 10"),
+        "the loop must sleep: {loop_cmd}"
+    );
+
+    // the fresh pid was recorded
+    let written = std::fs::read_to_string(&pid_file).unwrap();
+    assert_eq!(written.trim(), "4242", "spawn_detached pid must be written");
+
+    // the first cycle window is focused through the mux
+    assert!(
+        mux.calls().contains(&"focus:w1:t1".to_string()),
+        "first cycle window must be focused: {:?}",
+        mux.calls()
+    );
+
+    // restart_cycle=false → kill only, no spawn
+    let runner2 = Arc::new(FakeRunner::new());
+    runner2.push(0, "", ""); // kill 4242 (pid file)
+    runner2.push(1, "", ""); // pgrep → no match (absence, not an error)
+    let mux2 = Arc::new(FakeMux::new());
+    let server2 = McpServer::new(
+        Arc::new(test_config_with_pid(&pid_file)),
+        runner2.clone(),
+        mux2.clone(),
+        unused_cast_port(),
+    );
+    let result = server2
+        .restore(Parameters(RestoreParams {
+            restart_cycle: false,
+        }))
+        .await
+        .unwrap();
+    assert!(
+        !result.is_error.unwrap_or(false),
+        "must be a success result"
+    );
+    assert!(
+        !runner2
+            .calls()
+            .iter()
+            .any(|c| c.argv.first().map(String::as_str) == Some("bash")),
+        "restart_cycle=false must not spawn the loop"
+    );
+    assert!(
+        mux2.calls().contains(&"focus:w1:t1".to_string()),
+        "focus still happens without a respawn"
+    );
+
+    let _ = std::fs::remove_file(&pid_file);
+}
+
+fn test_config_with_pid(pid_file: &std::path::Path) -> Config {
+    let mut config = test_config();
+    config.cycle_pid_file = pid_file.display().to_string();
+    config
+}
+
+// ===========================================================================
+// R9 — mirror_session: kill the xterm, optionally focus, relaunch attached
+// ===========================================================================
+
+#[tokio::test]
+async fn test_mirror_session_relaunch() {
+    // herdr variant, no window arg: kill then spawn `exec herdr --session`
+    let runner = Arc::new(FakeRunner::new());
+    runner.push(0, "1234", ""); // pgrep -f herdr-tv
+    runner.push(0, "", ""); // kill 1234
+    runner.push(0, "", ""); // xterm spawn_detached
+    let mux = Arc::new(FakeMux::new());
+    let server = McpServer::new(
+        Arc::new(test_config()),
+        runner.clone(),
+        mux.clone(),
+        unused_cast_port(),
+    );
+    let result = server
+        .mirror_session(Parameters(MirrorSessionParams {
+            session: "demo".to_string(),
+            window: None,
+        }))
+        .await
+        .unwrap();
+    assert!(
+        !result.is_error.unwrap_or(false),
+        "must be a success result"
+    );
+
+    let calls = runner.calls();
+    assert_eq!(calls[0].argv, ["pgrep", "-f", "herdr-tv"]);
+    assert_eq!(calls[1].argv, ["kill", "1234"]);
+    let spawn = &calls[2].argv;
+    let attach = spawn.iter().position(|a| a == "-e").unwrap();
+    assert_eq!(spawn[attach], "-e");
+    assert_eq!(spawn[attach + 1], "/bin/sh");
+    assert_eq!(spawn[attach + 2], "-c");
+    assert_eq!(
+        spawn[attach + 3],
+        "exec herdr --session 'demo'",
+        "the attach shell comes from the herdr driver: {spawn:?}"
+    );
+    assert!(
+        !mux.calls().iter().any(|c| c.starts_with("focus:")),
+        "no window arg → no focus: {:?}",
+        mux.calls()
+    );
+
+    // a window arg → the mux focuses it before the relaunch
+    let runner2 = Arc::new(FakeRunner::new());
+    runner2.push(1, "", ""); // pgrep → no match (absence)
+    runner2.push(0, "", ""); // xterm spawn_detached
+    let mux2 = Arc::new(FakeMux::new());
+    let server2 = McpServer::new(
+        Arc::new(test_config()),
+        runner2.clone(),
+        mux2.clone(),
+        unused_cast_port(),
+    );
+    let result = server2
+        .mirror_session(Parameters(MirrorSessionParams {
+            session: "demo".to_string(),
+            window: Some("w1:t1".to_string()),
+        }))
+        .await
+        .unwrap();
+    assert!(!result.is_error.unwrap_or(false));
+    assert!(
+        mux2.calls().contains(&"focus:w1:t1".to_string()),
+        "the target window must be focused: {:?}",
+        mux2.calls()
+    );
+
+    // tmux variant: the attach shell comes from the tmux driver (readonly -r
+    // baked in by part 1), never from the tool
+    let runner3 = Arc::new(FakeRunner::new());
+    runner3.push(0, "1234", ""); // pgrep
+    runner3.push(0, "", ""); // kill
+    runner3.push(0, "", ""); // spawn
+    let tmux_mux: Arc<dyn Mux> = Arc::new(TmuxMux::new(runner3.clone(), "tv-demo", "agent"));
+    let server3 = McpServer::new(
+        Arc::new(test_config()),
+        runner3.clone(),
+        tmux_mux,
+        unused_cast_port(),
+    );
+    let result = server3
+        .mirror_session(Parameters(MirrorSessionParams {
+            session: "demo".to_string(),
+            window: None,
+        }))
+        .await
+        .unwrap();
+    assert!(!result.is_error.unwrap_or(false));
+    let spawn = &runner3.calls()[2].argv;
+    let attach = spawn.iter().position(|a| a == "-e").unwrap();
+    assert_eq!(
+        spawn[attach + 3],
+        "exec tmux attach -t 'demo' -r",
+        "tmux attach shell: {spawn:?}"
+    );
+}
+
+// ===========================================================================
+// R7 — pipeline_status: one JSON block, every field degrades to null
+// ===========================================================================
+
+#[tokio::test]
+async fn test_pipeline_status_json() {
+    let scratch = std::env::temp_dir().join(format!("mcp_status_{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&scratch);
+    std::fs::create_dir_all(&scratch).unwrap();
+
+    // playlist with 7 lines (tail = last 5) and two segments, seg-0002 newer
+    std::fs::write(
+        scratch.join("live.m3u8"),
+        "line1\nline2\nline3\nline4\nline5\nline6\nline7\n",
+    )
+    .unwrap();
+    let seg1 = scratch.join("seg-0001.ts");
+    let seg2 = scratch.join("seg-0002.ts");
+    std::fs::write(&seg1, "a").unwrap();
+    std::fs::write(&seg2, "b").unwrap();
+    let times = std::fs::FileTimes::new()
+        .set_modified(std::time::SystemTime::now() + std::time::Duration::from_secs(60));
+    std::fs::File::open(&seg2)
+        .unwrap()
+        .set_times(times)
+        .unwrap();
+
+    let mut config = test_config();
+    config.hls_dir = scratch.display().to_string();
+
+    let runner = Arc::new(FakeRunner::new());
+    runner.push(0, "1001", ""); // Xvfb
+    runner.push(
+        0,
+        "2002 xterm -class XTerm -fa 'DejaVu Sans Mono' -fs 13 -geometry 116x32+0+0 -T herdr-tv -e /bin/sh -c 'exec herdr --session tv-demo'",
+        "",
+    ); // display xterm (pgrep -af)
+    runner.push(0, "3003", ""); // ffmpeg
+    runner.push(0, "4004", ""); // hls_server
+    runner.push(1, "", ""); // cycle loop: no match
+
+    let mux = Arc::new(FakeMux::new());
+    mux.set_windows(vec![
+        WindowInfo {
+            id: "w1:t1".to_string(),
+            label: "htop".to_string(),
+        },
+        WindowInfo {
+            id: "w1:t2".to_string(),
+            label: "watch".to_string(),
+        },
+    ]);
+    mux.set_panes(vec![PaneInfo {
+        id: "w1:p1".to_string(),
+        window_id: "w1:t1".to_string(),
+    }]);
+
+    let server = McpServer::new(Arc::new(config), runner.clone(), mux, unused_cast_port());
+    let result = server.pipeline_status().await.unwrap();
+    assert!(!result.is_error.unwrap_or(false));
+    let text = content_text(&result);
+    let v: serde_json::Value = serde_json::from_str(&text)
+        .unwrap_or_else(|e| panic!("status must be valid JSON ({e}): {text}"));
+
+    // mux section: session + scripted tabs/panes
+    assert_eq!(v["mux"]["session"], "tv-demo");
+    let tabs = v["mux"]["windows"].as_array().unwrap();
+    assert_eq!(tabs.len(), 2, "tabs must be populated: {text}");
+    assert_eq!(tabs[0]["label"], "htop");
+    assert_eq!(tabs[1]["id"], "w1:t2");
+    assert_eq!(v["mux"]["panes"][0]["window_id"], "w1:t1");
+
+    // processes section
+    assert_eq!(v["processes"]["xvfb"][0], "1001");
+    assert_eq!(v["processes"]["display_xterm"]["pids"][0], "2002");
+    assert_eq!(
+        v["processes"]["display_xterm"]["font_size"], 13,
+        "the xterm's current -fs must be read from its cmdline"
+    );
+    assert_eq!(v["processes"]["ffmpeg"][0], "3003");
+    assert_eq!(v["processes"]["hls_server"][0], "4004");
+    assert_eq!(
+        v["processes"]["cycle_loop"],
+        serde_json::Value::Null,
+        "no cycle loop → null, not an error"
+    );
+
+    // hls section
+    assert_eq!(v["hls"]["present"], true);
+    assert_eq!(v["hls"]["playlist_present"], true);
+    assert_eq!(v["hls"]["segment_count"], 2);
+    assert_eq!(v["hls"]["last_segment"], "seg-0002.ts");
+    assert_eq!(
+        v["hls"]["playlist_tail"].as_str().unwrap(),
+        "line3\nline4\nline5\nline6\nline7"
+    );
+
+    // missing pieces: an HLS dir without a playlist, a failing mux, and a
+    // missing HLS dir → absent/null markers, no panic
+    let empty_dir = scratch.join("empty");
+    std::fs::create_dir_all(&empty_dir).unwrap();
+    let mut config2 = test_config();
+    config2.hls_dir = empty_dir.display().to_string();
+    let runner2 = Arc::new(FakeRunner::new());
+    for _ in 0..5 {
+        runner2.push(1, "", ""); // every pgrep: no match
+    }
+    let mux2 = Arc::new(FakeMux::new());
+    mux2.set_fail(true); // mux listing fails → null
+    let server2 = McpServer::new(Arc::new(config2), runner2.clone(), mux2, unused_cast_port());
+    let result2 = server2.pipeline_status().await.unwrap();
+    let v2: serde_json::Value = serde_json::from_str(&content_text(&result2)).unwrap();
+    assert_eq!(v2["hls"]["playlist_present"], false);
+    assert_eq!(v2["hls"]["playlist_tail"], serde_json::Value::Null);
+    assert_eq!(v2["hls"]["last_segment"], serde_json::Value::Null);
+    assert_eq!(v2["hls"]["segment_count"], 0);
+    assert_eq!(v2["processes"]["xvfb"], serde_json::Value::Null);
+    assert_eq!(v2["mux"]["windows"], serde_json::Value::Null);
+    assert_eq!(v2["mux"]["panes"], serde_json::Value::Null);
+
+    let missing_dir = scratch.join("does-not-exist");
+    let mut config3 = test_config();
+    config3.hls_dir = missing_dir.display().to_string();
+    let runner3 = Arc::new(FakeRunner::new());
+    for _ in 0..5 {
+        runner3.push(1, "", "");
+    }
+    let server3 = McpServer::new(
+        Arc::new(config3),
+        runner3.clone(),
+        Arc::new(FakeMux::new()),
+        unused_cast_port(),
+    );
+    let result3 = server3.pipeline_status().await.unwrap();
+    let v3: serde_json::Value = serde_json::from_str(&content_text(&result3)).unwrap();
+    assert_eq!(v3["hls"]["present"], false);
+    assert_eq!(v3["hls"]["segment_count"], serde_json::Value::Null);
+
+    let _ = std::fs::remove_dir_all(&scratch);
 }
