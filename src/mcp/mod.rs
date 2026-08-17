@@ -10,6 +10,7 @@ pub mod config;
 pub mod display;
 pub mod errors;
 pub mod runner;
+pub mod sizing;
 pub mod status;
 
 use std::sync::Arc;

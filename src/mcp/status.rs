@@ -4,7 +4,7 @@
 
 use serde_json::json;
 
-use super::display::XTERM_TITLE;
+use super::display::{xterm_font_size, xvfb_resolution, XTERM_TITLE};
 use super::McpServer;
 
 impl McpServer {
@@ -25,10 +25,14 @@ impl McpServer {
         });
         // Fetch order matches the JSON field order below: xvfb first, then the
         // display xterm, ffmpeg, hls_server, and the cycle loop.
-        let xvfb = self.pgrep_pids("Xvfb");
-        let xterm = self
-            .pgrep_full(XTERM_TITLE)
-            .map(|(pids, font_size)| json!({ "pids": pids, "font_size": font_size }));
+        let xvfb = self.pgrep_full("Xvfb");
+        let xvfb_pids = xvfb.as_ref().map(|(pids, _)| pids.clone());
+        let detected_resolution = xvfb
+            .as_ref()
+            .and_then(|(_, cmdlines)| xvfb_resolution(cmdlines));
+        let xterm = self.pgrep_full(XTERM_TITLE).map(
+            |(pids, cmdlines)| json!({ "pids": pids, "font_size": xterm_font_size(&cmdlines) }),
+        );
         let ffmpeg = self.pgrep_pids("ffmpeg");
         let hls_server = self.pgrep_pids("hls_server");
         let cycle_loop = self.pgrep_pids("herdr tab focus");
@@ -40,11 +44,19 @@ impl McpServer {
                 "panes": panes,
             },
             "processes": {
-                "xvfb": xvfb,
+                "xvfb": xvfb_pids,
                 "display_xterm": xterm,
                 "ffmpeg": ffmpeg,
                 "hls_server": hls_server,
                 "cycle_loop": cycle_loop,
+            },
+            "resolution": {
+                "configured": self.config.tv_resolution.clone(),
+                "xvfb": detected_resolution,
+                "mismatch": detected_resolution
+                    .as_deref()
+                    .map(|detected| detected != self.config.tv_resolution)
+                    .unwrap_or(false),
             },
             "hls": hls_state(&self.config.hls_dir),
         })

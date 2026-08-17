@@ -5,7 +5,7 @@
 use std::env;
 
 /// All environment-derived server configuration with defaults.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct Config {
     /// `MUX` — "herdr" (default) or "tmux".
     pub mux: String,
@@ -34,8 +34,21 @@ pub struct Config {
     pub cycle_pid_file: String,
     /// `X_DISPLAY` — the framebuffer display (default `:99`).
     pub x_display: String,
-    /// `XTERM_GEOMETRY` — the display xterm geometry (default `116x32+0+0`).
+    /// `XTERM_GEOMETRY` — the display xterm geometry (default `""` = computed
+    /// from `TV_RESOLUTION`/`TV_TERMINAL`/`TV_MARGIN` via `sizing::fit`; any
+    /// non-empty value is a legacy verbatim override preserving the old
+    /// hardcoded geometry).
     pub xterm_geometry: String,
+    /// `TV_RESOLUTION` — the display frame the pipeline renders at, `WxH`
+    /// (default `1280x720`). Drives Xvfb, ffmpeg and the computed xterm spec.
+    pub tv_resolution: String,
+    /// `TV_TERMINAL` — the logical display terminal size, `CxR` (default
+    /// `116x34`); the font is auto-fit so this many cols×rows clears the
+    /// margins.
+    pub tv_terminal: String,
+    /// `TV_MARGIN` — symmetric inset fraction of each frame edge kept clear of
+    /// the terminal (default `0.10`; must be in `(0, 0.5)`).
+    pub tv_margin: f64,
 }
 
 impl Config {
@@ -61,7 +74,13 @@ impl Config {
             cycle_pid_file: env::var("CYCLE_PID_FILE")
                 .unwrap_or_else(|_| "/tmp/m2/tv_cycle.pid".to_string()),
             x_display: env::var("X_DISPLAY").unwrap_or_else(|_| ":99".to_string()),
-            xterm_geometry: env::var("XTERM_GEOMETRY").unwrap_or_else(|_| "116x32+0+0".to_string()),
+            xterm_geometry: env::var("XTERM_GEOMETRY").unwrap_or_default(),
+            tv_resolution: env::var("TV_RESOLUTION").unwrap_or_else(|_| "1280x720".to_string()),
+            tv_terminal: env::var("TV_TERMINAL").unwrap_or_else(|_| "116x34".to_string()),
+            tv_margin: env::var("TV_MARGIN")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(0.10),
         }
     }
 }

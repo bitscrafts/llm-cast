@@ -7,12 +7,13 @@
 use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
 
-use cast_tv_terminal::mcp::cast::{
-    production_cast_port, stream_type_for, CastPort, CastUrlArgs, StreamKind,
-};
+#[cfg(not(feature = "cast"))]
+use cast_tv_terminal::mcp::cast::production_cast_port;
+use cast_tv_terminal::mcp::cast::{stream_type_for, CastPort, CastUrlArgs, StreamKind};
 use cast_tv_terminal::mcp::config::Config;
 use cast_tv_terminal::mcp::errors::McpServerError;
 use cast_tv_terminal::mcp::runner::{CommandOutcome, ProcRunner, Runner};
+use cast_tv_terminal::mcp::sizing::{fit, geometry_at, Resolution, TerminalSize};
 use cast_tv_terminal::mcp::{
     CastUrlParams, McpServer, MirrorSessionParams, RestoreParams, SetFontSizeParams,
 };
@@ -450,6 +451,9 @@ fn test_config_from_env_defaults() {
         "CYCLE_PID_FILE",
         "X_DISPLAY",
         "XTERM_GEOMETRY",
+        "TV_RESOLUTION",
+        "TV_TERMINAL",
+        "TV_MARGIN",
     ];
     let saved: Vec<(String, Option<String>)> = keys
         .iter()
@@ -475,7 +479,13 @@ fn test_config_from_env_defaults() {
     assert_eq!(cfg.hls_dir, "/tmp/m2/xhls");
     assert_eq!(cfg.cycle_pid_file, "/tmp/m2/tv_cycle.pid");
     assert_eq!(cfg.x_display, ":99");
-    assert_eq!(cfg.xterm_geometry, "116x32+0+0");
+    assert_eq!(
+        cfg.xterm_geometry, "",
+        "empty geometry = computed adaptive path"
+    );
+    assert_eq!(cfg.tv_resolution, "1280x720");
+    assert_eq!(cfg.tv_terminal, "116x34");
+    assert_eq!(cfg.tv_margin, 0.10);
 
     for (k, v) in saved {
         match v {
@@ -678,7 +688,13 @@ fn test_config() -> Config {
         hls_dir: "/tmp/m2/xhls".to_string(),
         cycle_pid_file: "/tmp/m2/tv_cycle.pid".to_string(),
         x_display: ":99".to_string(),
+        // non-empty geometry = legacy verbatim path, so the existing tool tests
+        // keep the exact pre-adaptive argv (the computed path is exercised by
+        // the dedicated `test_*_computed_geometry` tests below).
         xterm_geometry: "116x32+0+0".to_string(),
+        tv_resolution: "1280x720".to_string(),
+        tv_terminal: "116x34".to_string(),
+        tv_margin: 0.10,
     }
 }
 
@@ -876,6 +892,155 @@ async fn test_set_font_size_rejects_range() {
     assert!(
         runner.calls().is_empty(),
         "no side effects for out-of-range pts"
+    );
+}
+
+// ===========================================================================
+// Adaptive resolution — sizing model + the computed-geometry xterm wiring
+// ===========================================================================
+
+#[test]
+fn test_sizing_parse_and_margin_rejections() {
+    assert!(Resolution::parse("1920x1080").is_ok());
+    assert!(Resolution::parse("0x800").is_err());
+    assert!(Resolution::parse("1280").is_err());
+    assert!(Resolution::parse("1280x800x24").is_err());
+    assert!(Resolution::parse("garbage").is_err());
+    assert!(TerminalSize::parse("140x40").is_ok());
+    assert!(TerminalSize::parse("140x0").is_err());
+    assert!(TerminalSize::parse("140").is_err());
+
+    let frame = Resolution::parse("1280x720").unwrap();
+    let term = TerminalSize::parse("116x34").unwrap();
+    for bad in [0.0, 0.5, 1.0, -0.1] {
+        assert!(
+            fit(&frame, &term, bad).is_err(),
+            "margin {bad} must be rejected"
+        );
+        assert!(
+            geometry_at(&frame, &term, bad, 13.0).is_err(),
+            "margin {bad} must be rejected"
+        );
+    }
+}
+
+#[test]
+fn test_sizing_fit_goldens() {
+    // 720p (the legacy default frame), 116x34 at the 8% margin: width is the
+    // looser constraint, height the binding one → font 10.4, window centered.
+    let frame = Resolution::parse("1280x720").unwrap();
+    let term = TerminalSize::parse("116x34").unwrap();
+    let spec = fit(&frame, &term, 0.08).unwrap();
+    assert_eq!(spec.font_pts, "10.4", "auto-fit font: {spec:?}");
+    assert_eq!(
+        spec.geometry, "116x34+139+58",
+        "centered geometry: {spec:?}"
+    );
+
+    // 1080p, same terminal: a larger font that still clears the margins.
+    let hd = Resolution::parse("1920x1080").unwrap();
+    let spec_hd = fit(&hd, &term, 0.08).unwrap();
+    assert_eq!(spec_hd.font_pts, "15.6", "1080p auto-fit font: {spec_hd:?}");
+    assert_eq!(
+        spec_hd.geometry, "116x34+209+87",
+        "1080p geometry: {spec_hd:?}"
+    );
+
+    // the floor-to-0.1 quantization keeps the window inside the margin band
+    // (round-up would overflow): assert the constraint holds at the quantized font
+    let win_w = 116.0 * 15.6 * 0.83;
+    let win_h = 34.0 * 15.6 * 1.71;
+    assert!(win_w <= 1920.0 * 0.84, "window must fit the usable width");
+    assert!(win_h <= 1080.0 * 0.84, "window must fit the usable height");
+}
+
+#[tokio::test]
+async fn test_mirror_session_computed_geometry() {
+    // empty XTERM_GEOMETRY → the xterm argv carries the sizing::fit result,
+    // never a hardcoded font/geometry
+    let mut config = test_config();
+    config.xterm_geometry = String::new();
+    config.tv_resolution = "1920x1080".to_string();
+
+    let runner = Arc::new(FakeRunner::new());
+    runner.push(0, "1234", ""); // pgrep -f herdr-tv
+    runner.push(0, "", ""); // kill 1234
+    runner.push(0, "", ""); // xterm spawn_detached
+    let mux = Arc::new(FakeMux::new());
+    let server = McpServer::new(
+        Arc::new(config),
+        runner.clone(),
+        mux.clone(),
+        unused_cast_port(),
+    );
+    let result = server
+        .mirror_session(Parameters(MirrorSessionParams {
+            session: "demo".to_string(),
+            window: None,
+        }))
+        .await
+        .unwrap();
+    assert!(!result.is_error.unwrap_or(false));
+
+    // the expected spec is computed from the model, so the wiring and the math
+    // can never drift apart (the goldens above catch a math regression)
+    let frame = Resolution::parse("1920x1080").unwrap();
+    let term = TerminalSize::parse("116x34").unwrap();
+    let spec = fit(&frame, &term, 0.10).unwrap();
+    let spawn = &runner.calls()[2].argv;
+    assert!(
+        spawn
+            .windows(2)
+            .any(|w| w[0] == "-fs" && w[1] == spec.font_pts),
+        "spawn argv must carry the computed -fs {}: {:?}",
+        spec.font_pts,
+        spawn
+    );
+    assert!(
+        spawn.contains(&spec.geometry),
+        "spawn argv must carry the computed geometry {}: {:?}",
+        spec.geometry,
+        spawn
+    );
+}
+
+#[tokio::test]
+async fn test_set_font_size_computed_geometry() {
+    // empty XTERM_GEOMETRY → set_font_size centers the geometry for the given
+    // pts (a 15pt window on a 720p frame is wider than the frame, so the
+    // offsets clamp to 0 — geometry_at encodes exactly that)
+    let mut config = test_config();
+    config.xterm_geometry = String::new();
+
+    let runner = Arc::new(FakeRunner::new());
+    runner.push(0, "1234", ""); // pgrep -f herdr-tv
+    runner.push(0, "", ""); // kill 1234
+    runner.push(0, "", ""); // xterm spawn_detached
+    let server = McpServer::new(
+        Arc::new(config),
+        runner.clone(),
+        Arc::new(FakeMux::new()),
+        unused_cast_port(),
+    );
+    let result = server
+        .set_font_size(Parameters(SetFontSizeParams { pts: 15 }))
+        .await
+        .unwrap();
+    assert!(!result.is_error.unwrap_or(false));
+
+    let frame = Resolution::parse("1280x720").unwrap();
+    let term = TerminalSize::parse("116x34").unwrap();
+    let expected = geometry_at(&frame, &term, 0.10, 15.0).unwrap();
+    let spawn = &runner.calls()[2].argv;
+    assert!(
+        spawn.windows(2).any(|w| w[0] == "-fs" && w[1] == "15"),
+        "spawn argv must carry -fs 15: {:?}",
+        spawn
+    );
+    assert!(
+        spawn.contains(&expected),
+        "spawn argv must carry the computed geometry {expected}: {:?}",
+        spawn
     );
 }
 
@@ -1128,7 +1293,11 @@ async fn test_pipeline_status_json() {
     config.hls_dir = scratch.display().to_string();
 
     let runner = Arc::new(FakeRunner::new());
-    runner.push(0, "1001", ""); // Xvfb
+    runner.push(
+        0,
+        "1001 Xvfb :99 -screen 0 1280x720x24 -ac -nolisten tcp",
+        "",
+    ); // Xvfb (pgrep -af): pids + frame
     runner.push(
         0,
         "2002 xterm -class XTerm -fa 'DejaVu Sans Mono' -fs 13 -geometry 116x32+0+0 -T herdr-tv -e /bin/sh -c 'exec herdr --session tv-demo'",
@@ -1173,7 +1342,8 @@ async fn test_pipeline_status_json() {
     assert_eq!(v["processes"]["xvfb"][0], "1001");
     assert_eq!(v["processes"]["display_xterm"]["pids"][0], "2002");
     assert_eq!(
-        v["processes"]["display_xterm"]["font_size"], 13,
+        v["processes"]["display_xterm"]["font_size"].as_f64(),
+        Some(13.0),
         "the xterm's current -fs must be read from its cmdline"
     );
     assert_eq!(v["processes"]["ffmpeg"][0], "3003");
@@ -1183,6 +1353,11 @@ async fn test_pipeline_status_json() {
         serde_json::Value::Null,
         "no cycle loop → null, not an error"
     );
+
+    // resolution section: configured vs actually-running frame
+    assert_eq!(v["resolution"]["configured"], "1280x720");
+    assert_eq!(v["resolution"]["xvfb"], "1280x720");
+    assert_eq!(v["resolution"]["mismatch"], false);
 
     // hls section
     assert_eq!(v["hls"]["present"], true);

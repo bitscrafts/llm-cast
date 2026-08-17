@@ -3,15 +3,22 @@
 //! subprocess goes through the [`Runner`] seam, so a child can never inherit
 //! the operator's `HERDR_*` env (N5) or corrupt the MCP stdio stream (N4).
 //! `pgrep` with no match is absence, never an error.
+//!
+//! Font + geometry are resolution-adaptive by default: `mirror_session`
+//! computes them from `TV_RESOLUTION`/`TV_TERMINAL`/`TV_MARGIN` via
+//! [`sizing`](super::sizing), so the terminal always fits the real frame. A
+//! non-empty `XTERM_GEOMETRY` config opts back into the old hardcoded path.
 
 use super::errors::McpServerError;
 use super::runner::herdr_env_keys;
+use super::sizing::{fit, geometry_at, Resolution, TerminalSize};
 use super::McpServer;
 
 /// Title marker of the display xterm; `pgrep -f` matches its `-T` title.
 pub(crate) const XTERM_TITLE: &str = "herdr-tv";
-/// Default display font size when mirroring a session (matches the live stack).
-const DEFAULT_FONT_PTS: &str = "13";
+/// Font size of the legacy verbatim path (a non-empty `XTERM_GEOMETRY`
+/// override preserves the pre-adaptive behavior bit-for-bit).
+const LEGACY_FONT_PTS: &str = "13";
 /// xterm resource overrides for the framebuffer display.
 const XTERM_XRM: &str = "XTerm*scrollBar:false XTerm*menuBar:false \
      XTerm*internalBorder:0 XTerm*background:black XTerm*foreground:white";
@@ -30,7 +37,14 @@ impl McpServer {
         }
         self.kill_display_xterm();
         let attach = self.mux.attach_shell(&self.config.mux_session)?;
-        let argv_owned = self.xterm_argv(&pts.to_string(), &attach);
+        let geometry = if self.config.xterm_geometry.is_empty() {
+            let (frame, term) = self.parsed_frame_term()?;
+            geometry_at(&frame, &term, self.config.tv_margin, f64::from(pts))
+                .map_err(|e| McpServerError::InvalidArgument(format!("TV_MARGIN: {e}")))?
+        } else {
+            self.config.xterm_geometry.clone()
+        };
+        let argv_owned = self.xterm_argv(&pts.to_string(), &geometry, &attach);
         let argv: Vec<&str> = argv_owned.iter().map(String::as_str).collect();
         let env = vec![("DISPLAY".to_string(), self.config.x_display.clone())];
         let keys = herdr_env_keys();
@@ -76,7 +90,8 @@ impl McpServer {
             self.mux.focus(target)?;
         }
         let attach = self.mux.attach_shell(session)?;
-        let argv_owned = self.xterm_argv(DEFAULT_FONT_PTS, &attach);
+        let (font, geometry) = self.xterm_spec()?;
+        let argv_owned = self.xterm_argv(&font, &geometry, &attach);
         let argv: Vec<&str> = argv_owned.iter().map(String::as_str).collect();
         let env = vec![("DISPLAY".to_string(), self.config.x_display.clone())];
         let keys = herdr_env_keys();
@@ -85,9 +100,35 @@ impl McpServer {
         Ok(format!("display xterm now mirroring session '{session}'"))
     }
 
+    /// The display xterm's font + geometry: the legacy verbatim pair when
+    /// `XTERM_GEOMETRY` is set, otherwise the computed auto-fit from
+    /// `TV_RESOLUTION`/`TV_TERMINAL`/`TV_MARGIN`. A bad resolution/terminal/
+    /// margin config surfaces as a tool error rather than a wrong-sized xterm.
+    fn xterm_spec(&self) -> Result<(String, String), McpServerError> {
+        if !self.config.xterm_geometry.is_empty() {
+            return Ok((
+                LEGACY_FONT_PTS.to_string(),
+                self.config.xterm_geometry.clone(),
+            ));
+        }
+        let (frame, term) = self.parsed_frame_term()?;
+        let spec = fit(&frame, &term, self.config.tv_margin)
+            .map_err(|e| McpServerError::InvalidArgument(format!("TV_MARGIN: {e}")))?;
+        Ok((spec.font_pts, spec.geometry))
+    }
+
+    /// Parse the configured frame + terminal sizes for the computed path.
+    fn parsed_frame_term(&self) -> Result<(Resolution, TerminalSize), McpServerError> {
+        let frame = Resolution::parse(&self.config.tv_resolution)
+            .map_err(|e| McpServerError::InvalidArgument(format!("TV_RESOLUTION: {e}")))?;
+        let term = TerminalSize::parse(&self.config.tv_terminal)
+            .map_err(|e| McpServerError::InvalidArgument(format!("TV_TERMINAL: {e}")))?;
+        Ok((frame, term))
+    }
+
     /// The display xterm argv: the live `xterm … -T herdr-tv -e /bin/sh -c
-    /// <attach>` shape with the given `-fs` and the configured geometry.
-    fn xterm_argv(&self, font_size: &str, attach_shell: &str) -> Vec<String> {
+    /// <attach>` shape with the given `-fs` and geometry.
+    fn xterm_argv(&self, font_size: &str, geometry: &str, attach_shell: &str) -> Vec<String> {
         vec![
             "xterm".to_string(),
             "-class".to_string(),
@@ -97,7 +138,7 @@ impl McpServer {
             "-fs".to_string(),
             font_size.to_string(),
             "-geometry".to_string(),
-            self.config.xterm_geometry.clone(),
+            geometry.to_string(),
             "-xrm".to_string(),
             XTERM_XRM.to_string(),
             "-T".to_string(),
@@ -220,37 +261,76 @@ impl McpServer {
         }
     }
 
-    /// `pgrep -af <pattern>`: pids plus the first `-fs` value found in the
-    /// cmdlines (the display xterm's current font size). Absence → `None`.
-    pub(crate) fn pgrep_full(&self, pattern: &str) -> Option<(Vec<String>, Option<i32>)> {
+    /// `pgrep -af <pattern>`: pids plus the full cmdlines. The caller pulls
+    /// whatever value it needs (the display xterm's `-fs`, Xvfb's `-screen`
+    /// frame) via the helpers below. Absence → `None`.
+    pub(crate) fn pgrep_full(&self, pattern: &str) -> Option<(Vec<String>, Vec<String>)> {
         let outcome = self.runner.run(&["pgrep", "-af", pattern], &[], &[]).ok()?;
         if outcome.status != 0 {
             return None;
         }
         let mut pids: Vec<String> = Vec::new();
-        let mut font_size: Option<i32> = None;
+        let mut cmdlines: Vec<String> = Vec::new();
         for line in outcome.stdout.lines() {
             let mut parts = line.splitn(2, ' ');
             if let Some(pid) = parts.next().map(str::trim).filter(|p| !p.is_empty()) {
                 pids.push(pid.to_string());
             }
             if let Some(cmdline) = parts.next() {
-                let tokens: Vec<&str> = cmdline.split_whitespace().collect();
-                for (i, token) in tokens.iter().enumerate() {
-                    if *token == "-fs" && font_size.is_none() {
-                        if let Some(value) = tokens.get(i + 1).and_then(|v| v.parse().ok()) {
-                            font_size = Some(value);
-                        }
-                    }
-                }
+                cmdlines.push(cmdline.to_string());
             }
         }
         if pids.is_empty() {
             None
         } else {
-            Some((pids, font_size))
+            Some((pids, cmdlines))
         }
     }
+}
+
+/// The display xterm's current `-fs` from `pgrep -af` cmdlines, as `f64`
+/// (xterm's `faceSize` is a float resource, so the fit can carry a fractional
+/// font). Absent `-fs` → `None`.
+pub(crate) fn xterm_font_size(cmdlines: &[String]) -> Option<f64> {
+    cmdline_arg_value(cmdlines, "-fs").and_then(|value| value.parse().ok())
+}
+
+/// Xvfb's frame from `pgrep -af` cmdlines: the `-screen <n> <WxHx<depth>>`
+/// token, returned as `WxH`. Absent → `None`.
+pub(crate) fn xvfb_resolution(cmdlines: &[String]) -> Option<String> {
+    for tokens in cmdlines
+        .iter()
+        .map(|line| line.split_whitespace().collect::<Vec<&str>>())
+    {
+        for (i, token) in tokens.iter().enumerate() {
+            if *token == "-screen" {
+                if let Some(spec) = tokens.get(i + 2) {
+                    let dims: Vec<&str> = spec.split('x').collect();
+                    if dims.len() == 3 && !dims[0].is_empty() && !dims[1].is_empty() {
+                        return Some(format!("{}x{}", dims[0], dims[1]));
+                    }
+                }
+            }
+        }
+    }
+    None
+}
+
+/// The value of the first `-<option> <value>` pair across the cmdlines.
+fn cmdline_arg_value(cmdlines: &[String], option: &str) -> Option<String> {
+    for tokens in cmdlines
+        .iter()
+        .map(|line| line.split_whitespace().collect::<Vec<&str>>())
+    {
+        for (i, token) in tokens.iter().enumerate() {
+            if *token == option {
+                if let Some(value) = tokens.get(i + 1) {
+                    return Some((*value).to_string());
+                }
+            }
+        }
+    }
+    None
 }
 
 fn write_cycle_pid(path: &str, pid: u32) -> Result<(), McpServerError> {
