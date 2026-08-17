@@ -101,6 +101,14 @@ pub trait Mux: Send + Sync {
     /// Shell snippet to attach a new client to `session` (for the display
     /// xterm); the caller runs it with `exec`.
     fn attach_shell(&self, session: &str) -> Result<String, MuxError>;
+    /// The client terminal size (cols×rows) that shows the *entire* `session`,
+    /// or `None` when the backend cannot determine it (the caller falls back to
+    /// the configured `TV_TERMINAL`). Best-effort: a driver returns `Ok(None)`
+    /// rather than an error for a session it cannot size (server down,
+    /// unparseable output), so auto-detection never blocks a mirror that would
+    /// otherwise attach. herdr must add its own UI chrome to the pane area
+    /// (observed live: `x:4,y:1`), so the returned size already includes it.
+    fn session_size(&self, session: &str) -> Result<Option<(u32, u32)>, MuxError>;
 }
 
 /// Build the driver selected by the `MUX` env value (default `herdr`). This

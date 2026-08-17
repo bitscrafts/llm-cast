@@ -15,7 +15,8 @@ use cast_tv_terminal::mcp::errors::McpServerError;
 use cast_tv_terminal::mcp::runner::{CommandOutcome, ProcRunner, Runner};
 use cast_tv_terminal::mcp::sizing::{fit, geometry_at, Resolution, TerminalSize};
 use cast_tv_terminal::mcp::{
-    CastUrlParams, McpServer, MirrorSessionParams, RestoreParams, SetFontSizeParams,
+    CastUrlParams, LoadProfileParams, McpServer, MirrorSessionParams, RestoreParams,
+    SaveProfileParams, SetConfigParams, SetFontSizeParams,
 };
 use cast_tv_terminal::mux::herdr::HerdrMux;
 use cast_tv_terminal::mux::tmux::TmuxMux;
@@ -378,6 +379,102 @@ fn test_herdr_commands_and_env() {
     std::env::remove_var("HERDR_SOCKET_PATH");
 }
 
+#[test]
+fn test_herdr_session_size_detects_and_adds_chrome() {
+    let _guard = ENV_MUTEX.lock().unwrap();
+    std::env::set_var("HERDR_ENV", "1");
+    std::env::set_var("HERDR_SOCKET_PATH", "/ops/operator-default.sock");
+
+    let runner = Arc::new(FakeRunner::new());
+    // `herdr session list` — a global table (no socket env), socket is the last
+    // whitespace column. Regression: this MUST include the `herdr` prefix.
+    runner.push(
+        0,
+        "name     status  directory                                  socket\n\
+         default  running  /root/.config/herdr                         /root/.config/herdr/herdr.sock\n\
+         tv-demo  running  /root/.config/herdr/sessions/tv-demo        /root/.config/herdr/sessions/tv-demo/herdr.sock",
+        "",
+    );
+    // `herdr api snapshot` against the resolved default socket; the widest pane
+    // is 161x49 → the client size adds herdr's 4x1 chrome = 165x50
+    runner.push(
+        0,
+        r#"{"id":"cli:api:snapshot","result":{"snapshot":{"layouts":[
+            {"area":{"x":0,"y":0,"width":80,"height":30}},
+            {"area":{"x":4,"y":1,"width":161,"height":49}}
+        ]}}}"#,
+        "",
+    );
+
+    let driver = herdr_driver(runner.clone());
+    assert_eq!(driver.session_size("default").unwrap(), Some((165, 50)));
+
+    let calls = runner.calls();
+    assert_eq!(calls[0].argv, ["herdr", "session", "list"]);
+    // the global listing must not carry the driver's socket nor inherit HERDR_*
+    assert!(
+        !calls[0].env.iter().any(|(k, _)| k == "HERDR_SOCKET_PATH"),
+        "session list must not set a socket env: {:?}",
+        calls[0]
+    );
+    assert!(
+        calls[0].remove_env.contains(&"HERDR_ENV".to_string()),
+        "session list must strip inherited HERDR_* keys: {:?}",
+        calls[0]
+    );
+    assert_eq!(calls[1].argv, ["herdr", "api", "snapshot"]);
+    assert!(
+        calls[1].env.contains(&(
+            "HERDR_SOCKET_PATH".to_string(),
+            "/root/.config/herdr/herdr.sock".to_string()
+        )),
+        "the snapshot must go to the session's own socket: {:?}",
+        calls[1]
+    );
+
+    std::env::remove_var("HERDR_ENV");
+    std::env::remove_var("HERDR_SOCKET_PATH");
+}
+
+#[test]
+fn test_herdr_session_size_degrades_to_none() {
+    let _guard = ENV_MUTEX.lock().unwrap();
+    // a failing `herdr session list` (session unknown, herdr down, ...) must
+    // degrade to Ok(None) so the caller falls back to the configured terminal
+    let runner = Arc::new(FakeRunner::new());
+    runner.push(2, "", "no such session");
+    let driver = herdr_driver(runner.clone());
+    assert_eq!(driver.session_size("ghost").unwrap(), None);
+}
+
+#[test]
+fn test_tmux_session_size_detects_max_pane() {
+    let runner = Arc::new(FakeRunner::new());
+    // list-panes -F '#{pane_width}|#{pane_height}'; the widest/tallest wins
+    runner.push(0, "80|23\n165|49\n", "");
+    let driver = tmux_driver(runner.clone());
+    assert_eq!(driver.session_size("tv-demo").unwrap(), Some((165, 49)));
+    assert_eq!(
+        runner.calls()[0].argv,
+        [
+            "tmux",
+            "list-panes",
+            "-t",
+            "tv-demo",
+            "-F",
+            "#{pane_width}|#{pane_height}"
+        ]
+    );
+}
+
+#[test]
+fn test_tmux_session_size_degrades_to_none() {
+    let runner = Arc::new(FakeRunner::new());
+    runner.push(2, "", "no session");
+    let driver = tmux_driver(runner.clone());
+    assert_eq!(driver.session_size("ghost").unwrap(), None);
+}
+
 // ===========================================================================
 // R2 — mux::open selects a driver lazily, rejects unknown MUX values
 // ===========================================================================
@@ -454,6 +551,7 @@ fn test_config_from_env_defaults() {
         "TV_RESOLUTION",
         "TV_TERMINAL",
         "TV_MARGIN",
+        "PROFILES_DIR",
     ];
     let saved: Vec<(String, Option<String>)> = keys
         .iter()
@@ -486,6 +584,10 @@ fn test_config_from_env_defaults() {
     assert_eq!(cfg.tv_resolution, "1280x720");
     assert_eq!(cfg.tv_terminal, "116x34");
     assert_eq!(cfg.tv_margin, 0.10);
+    assert_eq!(
+        cfg.profiles_dir,
+        format!("{home}/.config/chromecast-tv-mirror/profiles")
+    );
 
     for (k, v) in saved {
         match v {
@@ -568,6 +670,7 @@ struct FakeMux {
     log: Mutex<Vec<String>>,
     attach: Mutex<String>,
     fail: Mutex<bool>,
+    session_size: Mutex<Option<(u32, u32)>>,
 }
 
 impl FakeMux {
@@ -578,6 +681,7 @@ impl FakeMux {
             log: Mutex::new(Vec::new()),
             attach: Mutex::new(String::new()),
             fail: Mutex::new(false),
+            session_size: Mutex::new(None),
         }
     }
 
@@ -591,6 +695,12 @@ impl FakeMux {
 
     fn set_fail(&self, fail: bool) {
         *self.fail.lock().unwrap() = fail;
+    }
+
+    /// Script the detected session size (e.g. the real herdr `161x49` pane plus
+    /// chrome → `Some((165, 50))`); `None` (default) = "backend can't size it".
+    fn set_session_size(&self, size: Option<(u32, u32)>) {
+        *self.session_size.lock().unwrap() = size;
     }
 
     fn calls(&self) -> Vec<String> {
@@ -671,6 +781,19 @@ impl Mux for FakeMux {
             Ok(scripted)
         }
     }
+
+    fn session_size(&self, session: &str) -> Result<Option<(u32, u32)>, MuxError> {
+        self.log
+            .lock()
+            .unwrap()
+            .push(format!("session_size:{session}"));
+        if *self.fail.lock().unwrap() {
+            return Err(MuxError::Runtime {
+                detail: "scripted failure".to_string(),
+            });
+        }
+        Ok(*self.session_size.lock().unwrap())
+    }
 }
 
 /// The config the part-2 tests wire up; defaults match the live tv-demo stack
@@ -695,6 +818,8 @@ fn test_config() -> Config {
         tv_resolution: "1280x720".to_string(),
         tv_terminal: "116x34".to_string(),
         tv_margin: 0.10,
+        // Each profile test overrides this with a scratch dir it clears first.
+        profiles_dir: "/tmp/m2/profiles".to_string(),
     }
 }
 
@@ -726,13 +851,16 @@ fn test_tool_router_registers_all_tools() {
         "pipeline_status",
         "restore",
         "mirror_session",
+        "set_config",
+        "save_profile",
+        "load_profile",
     ];
     for name in names {
         assert!(router.has_route(name), "missing tool route for {name}");
     }
     let router_tools = router.list_all();
     let listed: Vec<&str> = router_tools.iter().map(|t| t.name.as_ref()).collect();
-    assert_eq!(listed.len(), 7, "exactly seven tools, got {listed:?}");
+    assert_eq!(listed.len(), 10, "exactly ten tools, got {listed:?}");
 }
 
 // ===========================================================================
@@ -1233,10 +1361,13 @@ async fn test_mirror_session_relaunch() {
     );
 
     // tmux variant: the attach shell comes from the tmux driver (readonly -r
-    // baked in by part 1), never from the tool
+    // baked in by part 1), never from the tool. The real TmuxMux also sizes the
+    // session (`list-panes`) as part of the relaunch, so that subprocess is
+    // queued too.
     let runner3 = Arc::new(FakeRunner::new());
     runner3.push(0, "1234", ""); // pgrep
     runner3.push(0, "", ""); // kill
+    runner3.push(0, "100|25", ""); // list-panes (session_size → detected 100x25)
     runner3.push(0, "", ""); // spawn
     let tmux_mux: Arc<dyn Mux> = Arc::new(TmuxMux::new(runner3.clone(), "tv-demo", "agent"));
     let server3 = McpServer::new(
@@ -1253,7 +1384,7 @@ async fn test_mirror_session_relaunch() {
         .await
         .unwrap();
     assert!(!result.is_error.unwrap_or(false));
-    let spawn = &runner3.calls()[2].argv;
+    let spawn = &runner3.calls()[3].argv;
     let attach = spawn.iter().position(|a| a == "-e").unwrap();
     assert_eq!(
         spawn[attach + 3],
@@ -1662,7 +1793,7 @@ async fn e2e_handshake(server: &mut E2eServer) -> Value {
     list
 }
 
-/// All seven tool names, in any order.
+/// All ten tool names, in any order.
 fn assert_all_seven_tools(list: &Value) {
     let tools = list["result"]["tools"]
         .as_array()
@@ -1677,18 +1808,21 @@ fn assert_all_seven_tools(list: &Value) {
         [
             "cast_text",
             "cast_url",
+            "load_profile",
             "mirror_session",
             "pipeline_status",
             "restore",
             "run_command",
+            "save_profile",
+            "set_config",
             "set_font_size"
         ],
-        "tools/list must return all seven tools: {list}"
+        "tools/list must return all ten tools: {list}"
     );
 }
 
 // ===========================================================================
-// R1 — the built binary over a real stdio pipe: handshake, seven tools, and a
+// R1 — the built binary over a real stdio pipe: handshake, all tools, and a
 // cast_text whose child invocations land in FAKE_LOG (N4: stdout stayed pure
 // JSON-RPC or the line parser above would have failed).
 // ===========================================================================
@@ -1796,6 +1930,336 @@ async fn test_e2e_tool_error_keeps_server_alive() {
         server.is_alive(),
         "the server process must be alive after the failed call"
     );
-    let _ = std::fs::remove_dir_all(&fx.scratch);
     server.shutdown().await;
+    let _ = std::fs::remove_dir_all(&fx.scratch);
+}
+
+// ===========================================================================
+// S1 — set_config: runtime display-settings changes
+// ===========================================================================
+
+/// A scratch profiles dir unique to `tag` within this process, created empty
+/// (tests run in parallel threads, so two tests must never share one dir).
+fn scratch_profiles_dir(tag: &str) -> std::path::PathBuf {
+    let dir = std::env::temp_dir().join(format!("mcp_profiles_{}_{}", tag, std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    dir
+}
+
+#[tokio::test]
+async fn test_set_config_validates_before_applying() {
+    let runner = Arc::new(FakeRunner::new());
+    let server = McpServer::new(
+        Arc::new(test_config()),
+        runner.clone(),
+        Arc::new(FakeMux::new()),
+        unused_cast_port(),
+    );
+
+    let bad_resolution = server
+        .set_config(Parameters(SetConfigParams {
+            resolution: Some("bogus".to_string()),
+            terminal: None,
+            margin: None,
+            geometry: None,
+        }))
+        .await
+        .unwrap();
+    assert!(
+        bad_resolution.is_error.unwrap_or(false),
+        "a bad resolution must error: {bad_resolution:?}"
+    );
+
+    let bad_terminal = server
+        .set_config(Parameters(SetConfigParams {
+            resolution: None,
+            terminal: Some("0x40".to_string()),
+            margin: None,
+            geometry: None,
+        }))
+        .await
+        .unwrap();
+    assert!(bad_terminal.is_error.unwrap_or(false), "{bad_terminal:?}");
+
+    let bad_margin = server
+        .set_config(Parameters(SetConfigParams {
+            resolution: None,
+            terminal: None,
+            margin: Some(0.9),
+            geometry: None,
+        }))
+        .await
+        .unwrap();
+    assert!(bad_margin.is_error.unwrap_or(false), "{bad_margin:?}");
+
+    assert!(
+        runner.calls().is_empty(),
+        "validation failure must not touch the display: {:?}",
+        runner.calls()
+    );
+}
+
+#[tokio::test]
+async fn test_set_config_applies_overlay_without_relaunch() {
+    let runner = Arc::new(FakeRunner::new());
+    runner.push(1, "", ""); // pgrep -f herdr-tv → no display running
+    let server = McpServer::new(
+        Arc::new(test_config()),
+        runner.clone(),
+        Arc::new(FakeMux::new()),
+        unused_cast_port(),
+    );
+    let result = server
+        .set_config(Parameters(SetConfigParams {
+            resolution: Some("1920x1080".to_string()),
+            terminal: Some("200x60".to_string()),
+            margin: Some(0.08),
+            geometry: None,
+        }))
+        .await
+        .unwrap();
+    assert!(!result.is_error.unwrap_or(false), "{result:?}");
+    let text = content_text(&result);
+    assert!(text.contains("resolution=1920x1080"), "text: {text}");
+    assert!(text.contains("terminal=200x60"), "text: {text}");
+    assert!(text.contains("margin=0.08"), "text: {text}");
+    assert!(
+        runner.calls().len() == 1,
+        "no display running → no relaunch subprocesses: {:?}",
+        runner.calls()
+    );
+
+    // the overlay now feeds pipeline_status's display block
+    let status: serde_json::Value = serde_json::from_str(&server.pipeline_status_json()).unwrap();
+    assert_eq!(status["display"]["resolution"], "1920x1080");
+    assert_eq!(status["display"]["terminal"], "200x60");
+    assert_eq!(status["display"]["margin"], 0.08);
+}
+
+#[tokio::test]
+async fn test_set_config_relaunches_running_display() {
+    let runner = Arc::new(FakeRunner::new());
+    runner.push(0, "1234", ""); // pgrep -f herdr-tv (exist check)
+    runner.push(0, "1234", ""); // pgrep -f herdr-tv (kill)
+    runner.push(0, "", ""); // kill 1234
+    runner.push(0, "", ""); // xterm spawn_detached
+    let server = McpServer::new(
+        Arc::new(test_config()),
+        runner.clone(),
+        Arc::new(FakeMux::new()),
+        unused_cast_port(),
+    );
+    let result = server
+        .set_config(Parameters(SetConfigParams {
+            resolution: None,
+            terminal: Some("180x54".to_string()),
+            margin: None,
+            geometry: None,
+        }))
+        .await
+        .unwrap();
+    assert!(!result.is_error.unwrap_or(false), "{result:?}");
+    let text = content_text(&result);
+    assert!(text.contains("terminal=180x54"), "text: {text}");
+    // the running display was killed and relaunched attached to the configured
+    // session (last_session is empty → config.mux_session)
+    let spawn = &runner.calls()[3].argv;
+    assert_eq!(
+        spawn[0], "xterm",
+        "a relaunch must spawn the xterm: {spawn:?}"
+    );
+}
+
+// ===========================================================================
+// S2,S3 — save_profile / load_profile
+// ===========================================================================
+
+#[tokio::test]
+async fn test_save_load_profile_roundtrip() {
+    let dir = scratch_profiles_dir("roundtrip");
+    let mut config = test_config();
+    config.profiles_dir = dir.display().to_string();
+    let runner = Arc::new(FakeRunner::new());
+    let server = McpServer::new(
+        Arc::new(config),
+        runner.clone(),
+        Arc::new(FakeMux::new()),
+        unused_cast_port(),
+    );
+
+    // a non-default config, then save it
+    let set = server
+        .set_config(Parameters(SetConfigParams {
+            resolution: Some("1600x900".to_string()),
+            terminal: Some("180x54".to_string()),
+            margin: Some(0.06),
+            geometry: Some("180x54+10+10".to_string()),
+        }))
+        .await
+        .unwrap();
+    assert!(!set.is_error.unwrap_or(false), "{set:?}");
+
+    let saved = server
+        .save_profile(Parameters(SaveProfileParams {
+            name: "my-rig".to_string(),
+        }))
+        .await
+        .unwrap();
+    assert!(!saved.is_error.unwrap_or(false), "{saved:?}");
+    assert!(
+        content_text(&saved).contains("my-rig"),
+        "saved text: {:?}",
+        content_text(&saved)
+    );
+
+    let raw = std::fs::read_to_string(dir.join("my-rig.json")).unwrap();
+    let profile: serde_json::Value = serde_json::from_str(&raw).unwrap();
+    assert_eq!(profile["resolution"], "1600x900");
+    assert_eq!(profile["terminal"], "180x54");
+    assert_eq!(profile["margin"], 0.06);
+    assert_eq!(profile["geometry"], "180x54+10+10");
+
+    // drift the overlay away, then load the profile back
+    runner.push(1, "", ""); // set_config: pgrep → no display
+    let _ = server
+        .set_config(Parameters(SetConfigParams {
+            resolution: Some("640x480".to_string()),
+            terminal: None,
+            margin: None,
+            geometry: None,
+        }))
+        .await
+        .unwrap();
+    runner.push(1, "", ""); // load_profile: pgrep → no display
+    let loaded = server
+        .load_profile(Parameters(LoadProfileParams {
+            name: "my-rig".to_string(),
+        }))
+        .await
+        .unwrap();
+    assert!(!loaded.is_error.unwrap_or(false), "{loaded:?}");
+    assert!(
+        content_text(&loaded).contains("resolution=1600x900"),
+        "loaded text: {:?}",
+        content_text(&loaded)
+    );
+
+    let status: serde_json::Value = serde_json::from_str(&server.pipeline_status_json()).unwrap();
+    assert_eq!(status["display"]["resolution"], "1600x900");
+    assert_eq!(status["display"]["margin"], 0.06);
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test]
+async fn test_save_profile_rejects_unsafe_name() {
+    let dir = scratch_profiles_dir("unsafe-name");
+    let mut config = test_config();
+    config.profiles_dir = dir.display().to_string();
+    let server = McpServer::new(
+        Arc::new(config),
+        Arc::new(FakeRunner::new()),
+        Arc::new(FakeMux::new()),
+        unused_cast_port(),
+    );
+
+    for bad in ["", "a/b", "..", "two words"] {
+        let result = server
+            .save_profile(Parameters(SaveProfileParams {
+                name: bad.to_string(),
+            }))
+            .await
+            .unwrap();
+        assert!(
+            result.is_error.unwrap_or(false),
+            "name '{bad}' must be rejected: {result:?}"
+        );
+    }
+    assert_eq!(
+        std::fs::read_dir(&dir).map(|it| it.count()).unwrap_or(0),
+        0,
+        "no profile file may be written for a bad name"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+// ===========================================================================
+// auto-detect — mirror_session sizes the terminal from the mux session
+// ===========================================================================
+
+#[tokio::test]
+async fn test_mirror_session_auto_detects_session_size() {
+    // empty XTERM_GEOMETRY + a detectable session size → the geometry comes
+    // from the detected terminal (herdr pane 161x49 + 4x1 chrome = 165x50),
+    // not the configured TV_TERMINAL
+    let mut config = test_config();
+    config.xterm_geometry = String::new();
+    let runner = Arc::new(FakeRunner::new());
+    runner.push(0, "1234", ""); // pgrep
+    runner.push(0, "", ""); // kill
+    runner.push(0, "", ""); // spawn
+    let mux = Arc::new(FakeMux::new());
+    mux.set_session_size(Some((165, 50)));
+    let server = McpServer::new(
+        Arc::new(config),
+        runner.clone(),
+        mux.clone(),
+        unused_cast_port(),
+    );
+    let result = server
+        .mirror_session(Parameters(MirrorSessionParams {
+            session: "demo".to_string(),
+            window: None,
+        }))
+        .await
+        .unwrap();
+    assert!(!result.is_error.unwrap_or(false), "{result:?}");
+    assert!(
+        content_text(&result).contains("165x50"),
+        "the detected size must drive the terminal: {:?}",
+        content_text(&result)
+    );
+
+    let frame = Resolution::parse("1280x720").unwrap();
+    let term = TerminalSize {
+        cols: 165,
+        rows: 50,
+    };
+    let spec = fit(&frame, &term, 0.10).unwrap();
+    let spawn = &runner.calls()[2].argv;
+    assert!(
+        spawn.contains(&spec.geometry),
+        "spawn argv must carry the geometry fitted to the detected terminal {}: {:?}",
+        spec.geometry,
+        spawn
+    );
+}
+
+// ===========================================================================
+// R7 — pipeline_status reports the session + effective display
+// ===========================================================================
+
+#[tokio::test]
+async fn test_pipeline_status_session_and_display_blocks() {
+    let runner = Arc::new(FakeRunner::new());
+    let mux = Arc::new(FakeMux::new());
+    mux.set_session_size(Some((165, 50)));
+    let server = McpServer::new(
+        Arc::new(test_config()),
+        runner.clone(),
+        mux.clone(),
+        unused_cast_port(),
+    );
+
+    let status: serde_json::Value = serde_json::from_str(&server.pipeline_status_json()).unwrap();
+    assert_eq!(status["session"]["name"], "tv-demo");
+    assert_eq!(status["session"]["detected"], "165x50");
+    assert_eq!(status["session"]["effective_terminal"], "165x50");
+    assert_eq!(status["session"]["source"], "detected");
+    // display block = env config (no overlay set)
+    assert_eq!(status["display"]["resolution"], "1280x720");
+    assert_eq!(status["display"]["terminal"], "116x34");
+    assert_eq!(status["display"]["margin"], 0.10);
+    assert_eq!(status["display"]["geometry"], "116x32+0+0");
 }

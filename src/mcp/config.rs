@@ -49,6 +49,38 @@ pub struct Config {
     /// `TV_MARGIN` — symmetric inset fraction of each frame edge kept clear of
     /// the terminal (default `0.10`; must be in `(0, 0.5)`).
     pub tv_margin: f64,
+    /// `PROFILES_DIR` — directory where `save_profile` writes and
+    /// `load_profile` reads named display configs (default
+    /// `$HOME/.config/chromecast-tv-mirror/profiles`).
+    pub profiles_dir: String,
+}
+
+/// Runtime-overridable display settings. The env-derived [`Config`] is the
+/// immutable base; `set_config`/`load_profile` mutate this overlay and the
+/// display tools read `overlay.or(config)`. Each `None` means "use the config
+/// base", so an unset overlay is bit-identical to the env config.
+#[derive(Debug, Clone, PartialEq)]
+pub struct DisplaySettings {
+    /// `TV_RESOLUTION` override (`WxH`), or `None` = config.
+    pub resolution: Option<String>,
+    /// `TV_TERMINAL` override (`CxR`), or `None` = config.
+    pub terminal: Option<String>,
+    /// `TV_MARGIN` override, or `None` = config.
+    pub margin: Option<f64>,
+    /// `XTERM_GEOMETRY` legacy-verbatim override, or `None` = config.
+    pub geometry: Option<String>,
+}
+
+impl Default for DisplaySettings {
+    /// The default overlay: everything falls back to the env config.
+    fn default() -> Self {
+        Self {
+            resolution: None,
+            terminal: None,
+            margin: None,
+            geometry: None,
+        }
+    }
 }
 
 impl Config {
@@ -81,6 +113,8 @@ impl Config {
                 .ok()
                 .and_then(|v| v.parse().ok())
                 .unwrap_or(0.10),
+            profiles_dir: env::var("PROFILES_DIR")
+                .unwrap_or_else(|_| format!("{home}/.config/chromecast-tv-mirror/profiles")),
         }
     }
 }

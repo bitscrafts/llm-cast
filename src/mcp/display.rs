@@ -9,6 +9,10 @@
 //! [`sizing`](super::sizing), so the terminal always fits the real frame. A
 //! non-empty `XTERM_GEOMETRY` config opts back into the old hardcoded path.
 
+use std::path::Path;
+use std::sync::MutexGuard;
+
+use super::config::DisplaySettings;
 use super::errors::McpServerError;
 use super::runner::herdr_env_keys;
 use super::sizing::{fit, geometry_at, Resolution, TerminalSize};
@@ -37,12 +41,16 @@ impl McpServer {
         }
         self.kill_display_xterm();
         let attach = self.mux.attach_shell(&self.config.mux_session)?;
-        let geometry = if self.config.xterm_geometry.is_empty() {
-            let (frame, term) = self.parsed_frame_term()?;
-            geometry_at(&frame, &term, self.config.tv_margin, f64::from(pts))
+        let (frame_str, term_str, margin, geometry) = self.display_settings();
+        let geometry = if geometry.is_empty() {
+            let frame = Resolution::parse(&frame_str)
+                .map_err(|e| McpServerError::InvalidArgument(format!("TV_RESOLUTION: {e}")))?;
+            let term = TerminalSize::parse(&term_str)
+                .map_err(|e| McpServerError::InvalidArgument(format!("TV_TERMINAL: {e}")))?;
+            geometry_at(&frame, &term, margin, f64::from(pts))
                 .map_err(|e| McpServerError::InvalidArgument(format!("TV_MARGIN: {e}")))?
         } else {
-            self.config.xterm_geometry.clone()
+            geometry
         };
         let argv_owned = self.xterm_argv(&pts.to_string(), &geometry, &attach);
         let argv: Vec<&str> = argv_owned.iter().map(String::as_str).collect();
@@ -89,41 +97,202 @@ impl McpServer {
         if let Some(target) = window {
             self.mux.focus(target)?;
         }
+        self.relaunch_display(session)
+    }
+
+    /// Kill the display xterm and respawn it attached to `session`, sized from
+    /// the effective display settings with the session's pane size auto-detected
+    /// when the backend can report it. Records `session` as the last-mirrored
+    /// session so `set_config`/`load_profile` can re-attach to it.
+    pub(crate) fn relaunch_display(&self, session: &str) -> Result<String, McpServerError> {
         let attach = self.mux.attach_shell(session)?;
-        let (font, geometry) = self.xterm_spec()?;
+        let term = self.effective_terminal(session)?;
+        let (frame_str, _term_str, margin, geometry) = self.display_settings();
+        let (font, geometry) = if !geometry.is_empty() {
+            (LEGACY_FONT_PTS.to_string(), geometry)
+        } else {
+            let frame = Resolution::parse(&frame_str)
+                .map_err(|e| McpServerError::InvalidArgument(format!("TV_RESOLUTION: {e}")))?;
+            let spec = fit(&frame, &term, margin)
+                .map_err(|e| McpServerError::InvalidArgument(format!("TV_MARGIN: {e}")))?;
+            (spec.font_pts, spec.geometry)
+        };
         let argv_owned = self.xterm_argv(&font, &geometry, &attach);
         let argv: Vec<&str> = argv_owned.iter().map(String::as_str).collect();
         let env = vec![("DISPLAY".to_string(), self.config.x_display.clone())];
         let keys = herdr_env_keys();
         let remove_env: Vec<&str> = keys.iter().map(String::as_str).collect();
         self.runner.spawn_detached(&argv, &env, &remove_env)?;
-        Ok(format!("display xterm now mirroring session '{session}'"))
+        *self.last_session_guard() = Some(session.to_string());
+        Ok(format!(
+            "display xterm now mirroring session '{session}' at {}x{}",
+            term.cols, term.rows
+        ))
     }
 
-    /// The display xterm's font + geometry: the legacy verbatim pair when
-    /// `XTERM_GEOMETRY` is set, otherwise the computed auto-fit from
-    /// `TV_RESOLUTION`/`TV_TERMINAL`/`TV_MARGIN`. A bad resolution/terminal/
-    /// margin config surfaces as a tool error rather than a wrong-sized xterm.
-    fn xterm_spec(&self) -> Result<(String, String), McpServerError> {
-        if !self.config.xterm_geometry.is_empty() {
-            return Ok((
-                LEGACY_FONT_PTS.to_string(),
-                self.config.xterm_geometry.clone(),
-            ));
-        }
-        let (frame, term) = self.parsed_frame_term()?;
-        let spec = fit(&frame, &term, self.config.tv_margin)
-            .map_err(|e| McpServerError::InvalidArgument(format!("TV_MARGIN: {e}")))?;
-        Ok((spec.font_pts, spec.geometry))
-    }
-
-    /// Parse the configured frame + terminal sizes for the computed path.
-    fn parsed_frame_term(&self) -> Result<(Resolution, TerminalSize), McpServerError> {
-        let frame = Resolution::parse(&self.config.tv_resolution)
-            .map_err(|e| McpServerError::InvalidArgument(format!("TV_RESOLUTION: {e}")))?;
-        let term = TerminalSize::parse(&self.config.tv_terminal)
+    /// The display terminal for a mirror: the auto-detected session size
+    /// (session panes + herdr chrome) when the backend can report it, otherwise
+    /// the effective `TV_TERMINAL`. The detected size is best-effort — a
+    /// failure degrades to the configured value, never an error.
+    pub(crate) fn effective_terminal(&self, session: &str) -> Result<TerminalSize, McpServerError> {
+        let term_str = self.display_settings().1;
+        let config_term = TerminalSize::parse(&term_str)
             .map_err(|e| McpServerError::InvalidArgument(format!("TV_TERMINAL: {e}")))?;
-        Ok((frame, term))
+        match self.mux.session_size(session) {
+            Ok(Some((cols, rows))) if cols > 0 && rows > 0 => Ok(TerminalSize { cols, rows }),
+            _ => Ok(config_term),
+        }
+    }
+
+    /// The effective display settings: each runtime-override value wins, else
+    /// the env-derived config base. `(resolution, terminal, margin, geometry)`.
+    pub(crate) fn display_settings(&self) -> (String, String, f64, String) {
+        let overlay = self.display_guard();
+        (
+            overlay
+                .resolution
+                .clone()
+                .unwrap_or_else(|| self.config.tv_resolution.clone()),
+            overlay
+                .terminal
+                .clone()
+                .unwrap_or_else(|| self.config.tv_terminal.clone()),
+            overlay.margin.unwrap_or(self.config.tv_margin),
+            overlay
+                .geometry
+                .clone()
+                .unwrap_or_else(|| self.config.xterm_geometry.clone()),
+        )
+    }
+
+    /// The runtime display overlay (poison-recovering: a panic while held
+    /// yields the value rather than crashing the tool).
+    pub(crate) fn display_guard(&self) -> MutexGuard<'_, DisplaySettings> {
+        self.display
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    /// The last-mirrored session, so a settings change can re-attach the display
+    /// xterm to the same session it was showing.
+    pub(crate) fn last_session_guard(&self) -> MutexGuard<'_, Option<String>> {
+        self.last_session
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    /// The session a display relaunch should attach to: the last-mirrored one
+    /// when known, else the configured mux session.
+    pub(crate) fn relaunch_session(&self) -> String {
+        self.last_session_guard()
+            .clone()
+            .unwrap_or_else(|| self.config.mux_session.clone())
+    }
+
+    /// Change the display settings (resolution/terminal/margin/geometry) at
+    /// runtime — each `None` leaves that field untouched. Values are validated
+    /// before the overlay is touched, so a bad value leaves the current
+    /// settings intact. When a display xterm is running it is relaunched at the
+    /// new settings attached to the last-mirrored session.
+    pub fn set_config_impl(
+        &self,
+        resolution: Option<String>,
+        terminal: Option<String>,
+        margin: Option<f64>,
+        geometry: Option<String>,
+    ) -> Result<String, McpServerError> {
+        if let Some(r) = &resolution {
+            Resolution::parse(r)
+                .map_err(|e| McpServerError::InvalidArgument(format!("resolution: {e}")))?;
+        }
+        if let Some(t) = &terminal {
+            TerminalSize::parse(t)
+                .map_err(|e| McpServerError::InvalidArgument(format!("terminal: {e}")))?;
+        }
+        if let Some(m) = margin {
+            if !(m > 0.0 && m < 0.5) {
+                return Err(McpServerError::InvalidArgument(format!(
+                    "margin must be in (0, 0.5), got {m}"
+                )));
+            }
+        }
+        {
+            let mut overlay = self.display_guard();
+            if let Some(r) = resolution {
+                overlay.resolution = Some(r);
+            }
+            if let Some(t) = terminal {
+                overlay.terminal = Some(t);
+            }
+            if let Some(m) = margin {
+                overlay.margin = Some(m);
+            }
+            if let Some(g) = geometry {
+                overlay.geometry = Some(g);
+            }
+        }
+        let (r, t, m, g) = self.display_settings();
+        if self.pgrep_pids(XTERM_TITLE).is_some() {
+            let session = self.relaunch_session();
+            self.kill_display_xterm();
+            self.relaunch_display(&session)?;
+        }
+        Ok(format!(
+            "display settings updated: resolution={r} terminal={t} margin={m} geometry='{g}'"
+        ))
+    }
+
+    /// Save the current effective display settings as a named profile under
+    /// `PROFILES_DIR/<name>.json`.
+    pub fn save_profile_impl(&self, name: &str) -> Result<String, McpServerError> {
+        let name = validate_profile_name(name)?;
+        let (resolution, terminal, margin, geometry) = self.display_settings();
+        let profile = Profile {
+            resolution,
+            terminal,
+            margin,
+            geometry,
+        };
+        let json = serde_json::to_string_pretty(&profile)
+            .map_err(|e| McpServerError::Internal(format!("serialize profile: {e}")))?;
+        let dir = Path::new(&self.config.profiles_dir);
+        std::fs::create_dir_all(dir).map_err(|e| {
+            McpServerError::Internal(format!("cannot create {}: {e}", dir.display()))
+        })?;
+        let path = dir.join(format!("{name}.json"));
+        std::fs::write(&path, json).map_err(|e| {
+            McpServerError::Internal(format!("cannot write {}: {e}", path.display()))
+        })?;
+        Ok(format!("profile '{name}' saved to {}", path.display()))
+    }
+
+    /// Load a named profile and apply it as the display settings, relaunching a
+    /// running display xterm at the restored values.
+    pub fn load_profile_impl(&self, name: &str) -> Result<String, McpServerError> {
+        let name = validate_profile_name(name)?;
+        let path = Path::new(&self.config.profiles_dir).join(format!("{name}.json"));
+        let raw = std::fs::read_to_string(&path).map_err(|e| {
+            McpServerError::InvalidArgument(format!("cannot read profile '{name}': {e}"))
+        })?;
+        let profile: Profile = serde_json::from_str(&raw).map_err(|e| {
+            McpServerError::InvalidArgument(format!("profile '{name}' is not valid JSON: {e}"))
+        })?;
+        {
+            let mut overlay = self.display_guard();
+            overlay.resolution = Some(profile.resolution);
+            overlay.terminal = Some(profile.terminal);
+            overlay.margin = Some(profile.margin);
+            overlay.geometry = Some(profile.geometry);
+        }
+        let (r, t, m, g) = self.display_settings();
+        if self.pgrep_pids(XTERM_TITLE).is_some() {
+            let session = self.relaunch_session();
+            self.kill_display_xterm();
+            self.relaunch_display(&session)?;
+        }
+        Ok(format!(
+            "profile '{name}' applied: resolution={r} terminal={t} margin={m} geometry='{g}'"
+        ))
     }
 
     /// The display xterm argv: the live `xterm … -T herdr-tv -e /bin/sh -c
@@ -336,4 +505,32 @@ fn cmdline_arg_value(cmdlines: &[String], option: &str) -> Option<String> {
 fn write_cycle_pid(path: &str, pid: u32) -> Result<(), McpServerError> {
     std::fs::write(path, format!("{pid}\n"))
         .map_err(|e| McpServerError::Internal(format!("cannot write cycle pid file {path}: {e}")))
+}
+
+/// A saved named display config: the resolved effective settings at save time,
+/// so `load_profile` restores exactly what was saved regardless of the env
+/// base. Mirrors [`DisplaySettings`] minus the `None` fallbacks.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub(crate) struct Profile {
+    pub(crate) resolution: String,
+    pub(crate) terminal: String,
+    pub(crate) margin: f64,
+    pub(crate) geometry: String,
+}
+
+/// A profile name must be a single path-safe segment: non-empty, no `/`, no
+/// `..`, no whitespace. This is the only guard between a tool argument and a
+/// filesystem path, so it errs strict.
+fn validate_profile_name(name: &str) -> Result<String, McpServerError> {
+    let name = name.trim();
+    if name.is_empty()
+        || name.contains('/')
+        || name.contains("..")
+        || name.chars().any(char::is_whitespace)
+    {
+        return Err(McpServerError::InvalidArgument(format!(
+            "profile name must be a single non-empty path-safe segment, got '{name}'"
+        )));
+    }
+    Ok(name.to_string())
 }

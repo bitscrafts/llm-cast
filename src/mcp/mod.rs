@@ -13,7 +13,7 @@ pub mod runner;
 pub mod sizing;
 pub mod status;
 
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use rmcp::handler::server::wrapper::Parameters;
 use rmcp::model::{CallToolResult, ContentBlock, ErrorData};
@@ -23,19 +23,26 @@ use rmcp::{tool, tool_handler, tool_router, ServerHandler, ServiceExt};
 use crate::mux::Mux;
 
 use self::cast::{CastPort, CastUrlArgs};
-use self::config::Config;
+use self::config::{Config, DisplaySettings};
 use self::errors::McpServerError;
 use self::runner::Runner;
 
 /// The MCP server: the seven tools plus the stdio entrypoint wiring. Holds
 /// every seam as an `Arc` so tests inject fakes and the bin injects
-/// production implementations.
+/// production implementations. `display`/`last_session` are the runtime
+/// mutable display-settings state (`set_config`/`load_profile` mutate the
+/// overlay; `mirror_session` records the session it last attached to).
 #[derive(Clone)]
 pub struct McpServer {
     pub(crate) config: Arc<Config>,
     pub(crate) runner: Arc<dyn Runner>,
     pub(crate) mux: Arc<dyn Mux>,
     pub(crate) cast_port: CastPort,
+    /// Runtime overrides on top of the immutable env config.
+    pub(crate) display: Arc<Mutex<DisplaySettings>>,
+    /// The session most recently mirrored, for `set_config`/`load_profile`
+    /// relaunches (falls back to `config.mux_session`).
+    pub(crate) last_session: Arc<Mutex<Option<String>>>,
 }
 
 /// Tool arguments for `cast_url`.
@@ -86,6 +93,38 @@ pub struct MirrorSessionParams {
     pub window: Option<String>,
 }
 
+/// Tool arguments for `set_config`.
+#[derive(serde::Deserialize, rmcp::schemars::JsonSchema)]
+pub struct SetConfigParams {
+    /// Frame resolution the pipeline renders at, `WxH` (e.g. `1280x720`).
+    #[serde(rename = "resolution")]
+    pub resolution: Option<String>,
+    /// Logical display terminal size, `CxR` (e.g. `165x50`); the font is
+    /// auto-fit so this many cols×rows clears the margins.
+    #[serde(rename = "terminal")]
+    pub terminal: Option<String>,
+    /// Symmetric inset fraction of each frame edge (must be in `(0, 0.5)`).
+    #[serde(rename = "margin")]
+    pub margin: Option<f64>,
+    /// Legacy verbatim xterm geometry override (non-empty disables auto-fit).
+    #[serde(rename = "geometry")]
+    pub geometry: Option<String>,
+}
+
+/// Tool arguments for `save_profile`.
+#[derive(serde::Deserialize, rmcp::schemars::JsonSchema)]
+pub struct SaveProfileParams {
+    /// The profile name (single path-safe segment, no spaces).
+    pub name: String,
+}
+
+/// Tool arguments for `load_profile`.
+#[derive(serde::Deserialize, rmcp::schemars::JsonSchema)]
+pub struct LoadProfileParams {
+    /// The profile name to load.
+    pub name: String,
+}
+
 impl McpServer {
     /// Wire the seams into a server. Tests inject fakes; the bin injects the
     /// production implementations.
@@ -100,6 +139,8 @@ impl McpServer {
             runner,
             mux,
             cast_port,
+            display: Arc::new(Mutex::new(DisplaySettings::default())),
+            last_session: Arc::new(Mutex::new(None)),
         }
     }
 
@@ -227,6 +268,48 @@ impl McpServer {
         Parameters(args): Parameters<MirrorSessionParams>,
     ) -> Result<CallToolResult, ErrorData> {
         match self.mirror_session_impl(&args.session, args.window.as_deref()) {
+            Ok(text) => Ok(CallToolResult::success(vec![ContentBlock::text(text)])),
+            Err(error) => tool_error(error),
+        }
+    }
+
+    /// S1 — change the display settings at runtime. Each omitted field is left
+    /// unchanged; when a display xterm is running it is relaunched at the new
+    /// settings attached to the last-mirrored session.
+    #[tool(
+        description = "Change display settings (resolution/terminal/margin/geometry) at runtime"
+    )]
+    pub async fn set_config(
+        &self,
+        Parameters(args): Parameters<SetConfigParams>,
+    ) -> Result<CallToolResult, ErrorData> {
+        match self.set_config_impl(args.resolution, args.terminal, args.margin, args.geometry) {
+            Ok(text) => Ok(CallToolResult::success(vec![ContentBlock::text(text)])),
+            Err(error) => tool_error(error),
+        }
+    }
+
+    /// S2 — save the current effective display settings as a named profile.
+    #[tool(description = "Save the current display settings as a named profile")]
+    pub async fn save_profile(
+        &self,
+        Parameters(args): Parameters<SaveProfileParams>,
+    ) -> Result<CallToolResult, ErrorData> {
+        match self.save_profile_impl(&args.name) {
+            Ok(text) => Ok(CallToolResult::success(vec![ContentBlock::text(text)])),
+            Err(error) => tool_error(error),
+        }
+    }
+
+    /// S3 — load a saved profile and apply it as the display settings.
+    #[tool(
+        description = "Load a saved display profile and apply it (relaunches a running display)"
+    )]
+    pub async fn load_profile(
+        &self,
+        Parameters(args): Parameters<LoadProfileParams>,
+    ) -> Result<CallToolResult, ErrorData> {
+        match self.load_profile_impl(&args.name) {
             Ok(text) => Ok(CallToolResult::success(vec![ContentBlock::text(text)])),
             Err(error) => tool_error(error),
         }

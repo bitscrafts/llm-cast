@@ -156,4 +156,37 @@ impl Mux for TmuxMux {
             super::shell_single_quote(session)
         ))
     }
+
+    fn session_size(&self, session: &str) -> Result<Option<(u32, u32)>, MuxError> {
+        // The widest/tallest pane bounds what a single client must show. tmux
+        // has no client-side chrome, so the returned size is the pane size
+        // verbatim. Best-effort: a failing list degrades to Ok(None).
+        let out = match self.tmux(&[
+            "list-panes",
+            "-t",
+            session,
+            "-F",
+            "#{pane_width}|#{pane_height}",
+        ]) {
+            Ok(out) => out,
+            Err(_) => return Ok(None),
+        };
+        let mut cols = 0u32;
+        let mut rows = 0u32;
+        for line in out.lines() {
+            let mut fields = line.split('|');
+            if let (Some(width), Some(height)) = (fields.next(), fields.next()) {
+                if let (Ok(width), Ok(height)) =
+                    (width.trim().parse::<u32>(), height.trim().parse::<u32>())
+                {
+                    cols = cols.max(width);
+                    rows = rows.max(height);
+                }
+            }
+        }
+        if cols == 0 || rows == 0 {
+            return Ok(None);
+        }
+        Ok(Some((cols, rows)))
+    }
 }

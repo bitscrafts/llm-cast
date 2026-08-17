@@ -13,6 +13,13 @@ use crate::mcp::runner::{herdr_env_keys, Runner};
 
 use super::{Mux, MuxError, PaneInfo, WindowInfo};
 
+/// Columns of herdr UI chrome reserved inside the attaching client. Observed
+/// live 2026-08-17: a `161x49` session laid out as `area {x:4, y:1, w:161,
+/// h:49}` in a `165x50` client — so a client of `WxH` shows `(W-4)x(H-1)` of
+/// pane, and a `WxH` pane needs a `(W+4)x(H+1)` client to be fully visible.
+const CLIENT_CHROME_COLS: u32 = 4;
+const CLIENT_CHROME_ROWS: u32 = 1;
+
 /// Driver for the herdr socket CLI.
 pub struct HerdrMux {
     runner: Arc<dyn Runner>,
@@ -38,10 +45,17 @@ impl HerdrMux {
     /// Run `herdr <args>` against the configured socket; non-zero exits and
     /// unparseable JSON become [`MuxError`]s carrying the raw output.
     fn herdr_json(&self, args: &[&str]) -> Result<serde_json::Value, MuxError> {
+        self.herdr_json_at(&self.socket, args)
+    }
+
+    /// `herdr_json` against an explicit socket — the one case that needs a
+    /// different session than this driver's configured socket is `session_size`
+    /// (the mirrored session, e.g. `default`, vs the agent session `tv-demo`).
+    fn herdr_json_at(&self, socket: &str, args: &[&str]) -> Result<serde_json::Value, MuxError> {
         let mut argv = Vec::with_capacity(args.len() + 1);
         argv.push("herdr");
         argv.extend_from_slice(args);
-        let env = vec![("HERDR_SOCKET_PATH".to_string(), self.socket.clone())];
+        let env = vec![("HERDR_SOCKET_PATH".to_string(), socket.to_string())];
         let remove_env: Vec<&str> = self.herdr_env_keys.iter().map(String::as_str).collect();
         let outcome = self
             .runner
@@ -61,6 +75,27 @@ impl HerdrMux {
             command: argv.join(" "),
             raw: outcome.stdout,
         })
+    }
+
+    /// The socket of a named session from `herdr session list` (a global
+    /// listing that does not depend on this driver's socket — verified live
+    /// 2026-08-17). The socket is the final whitespace column of the row whose
+    /// first column is the session name; a missing session → `None`.
+    fn session_socket(&self, session: &str) -> Option<String> {
+        let argv = vec!["herdr", "session", "list"];
+        let remove_env: Vec<&str> = self.herdr_env_keys.iter().map(String::as_str).collect();
+        let outcome = self
+            .runner
+            .run(&argv, &[], &remove_env)
+            .ok()
+            .filter(|o| o.status == 0)?;
+        for line in outcome.stdout.lines() {
+            let mut fields = line.split_whitespace();
+            if fields.next() == Some(session) {
+                return fields.last().map(str::to_string);
+            }
+        }
+        None
     }
 
     /// Run a fire-and-forget `herdr` command where only the exit status
@@ -224,5 +259,56 @@ impl Mux for HerdrMux {
             "exec herdr --session {}",
             super::shell_single_quote(session)
         ))
+    }
+
+    fn session_size(&self, session: &str) -> Result<Option<(u32, u32)>, MuxError> {
+        // Best-effort by design: any hiccup (session list unparseable, snapshot
+        // empty, server down) degrades to Ok(None) so the caller falls back to
+        // the configured TV_TERMINAL instead of failing the mirror.
+        //
+        // Known limitation (observed live 2026-08-17, rare ~1-5%): herdr's
+        // server can occasionally return ANOTHER session's snapshot against a
+        // socket (a `76x23` tv-demo snapshot through the `default` socket), so
+        // the detected size is briefly the wrong session's. Both herdr sessions
+        // share the `w1` workspace and overlapping pane/tab ids, so no reliable
+        // cross-check exists; a wrong size here only ever misreports
+        // `pipeline_status`, never the mirror launch (the mirror itself has
+        // never been observed wrong), and the caller's config fallback covers
+        // the degraded case.
+        let socket = match self.session_socket(session) {
+            Some(s) => s,
+            None => return Ok(None),
+        };
+        let value = match self.herdr_json_at(&socket, &["api", "snapshot"]) {
+            Ok(v) => v,
+            Err(_) => return Ok(None),
+        };
+        let layouts = match value
+            .get("result")
+            .and_then(|r| r.get("snapshot"))
+            .and_then(|snap| snap.get("layouts"))
+            .and_then(|layouts| layouts.as_array())
+        {
+            Some(layouts) => layouts,
+            None => return Ok(None),
+        };
+        let mut cols = 0u32;
+        let mut rows = 0u32;
+        for layout in layouts {
+            let area = layout.get("area");
+            if let (Some(width), Some(height)) = (
+                area.and_then(|a| a.get("width")).and_then(|v| v.as_u64()),
+                area.and_then(|a| a.get("height")).and_then(|v| v.as_u64()),
+            ) {
+                cols = cols.max(width as u32);
+                rows = rows.max(height as u32);
+            }
+        }
+        if cols == 0 || rows == 0 {
+            return Ok(None);
+        }
+        // The client must be larger than the pane area by herdr's own chrome so
+        // no pane is clipped.
+        Ok(Some((cols + CLIENT_CHROME_COLS, rows + CLIENT_CHROME_ROWS)))
     }
 }

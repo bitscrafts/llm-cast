@@ -948,3 +948,77 @@ much sharper", then full-screen confirmed "perfect".
 - Future research (see agent-memory `research/*`): HTML+JS graphical dashboard
   on the TV; agent-managed pipeline (verdict: tmux via Claude Code Bash — no
   MCP/ACP/A2A needed; see `research/agent-managed-pipeline-protocols`).
+
+## 2026-08-17 (spec-03 R2) — session-size auto-detect + runtime display-settings MCP tools
+
+### What changed
+`mirror_session` now **auto-detects the mirrored session's real size** instead
+of trusting the configured `TV_TERMINAL`. A display-settings overlay was added
+so resolution/terminal/margin/geometry can be changed **at runtime via MCP
+tools** (no editing `.mcp.json` + restart).
+
+- **`src/mux/herdr.rs` — `Mux::session_size(session)`** (new trait method):
+  `herdr session list` → parse the session's socket (final whitespace column of
+  the matching row) → `herdr api snapshot` → max `layouts[].area.{width,height}`
+  → add herdr's own client chrome `+4 cols/+1 row` (`CLIENT_CHROME_COLS/ROWS`,
+  observed live: a `161x49` pane area in a `165x50` client at `x:4,y:1`). Any
+  hiccup → `Ok(None)` → caller falls back to configured `TV_TERMINAL`.
+- **`src/mux/tmux.rs` — same trait method**: `tmux list-panes -t <session> -F
+  '#{pane_width}|#{pane_height}'` → max pane. No chrome (tmux panes already
+  fill the window).
+- **`src/mcp/config.rs` — `DisplaySettings` overlay** (all-`Option`): the
+  env-derived `Config` stays immutable; `set_config`/`load_profile` mutate the
+  overlay; display tools read `overlay.or(config)`. `None` = config base.
+- **New MCP tools** (`src/mcp/mod.rs` + `src/mcp/display.rs`), bringing the
+  tool count from 7 → **10**:
+  - `set_config` — resolution/terminal/margin/geometry, each optional
+    (omitted = unchanged); validates *before* mutating; relaunches a running
+    display at the new settings attached to the last-mirrored session.
+  - `save_profile` — serializes the effective settings to
+    `$PROFILES_DIR/<name>.json` (default `$HOME/.config/chromecast-tv-mirror/
+    profiles/`); name must be one path-safe segment (no `/`, no `..`, no space).
+  - `load_profile` — reads a saved profile, applies it as the overlay,
+    relaunches a running display.
+- **`pipeline_status`** gained two blocks: `session` (name, `detected` size,
+  `effective_terminal`, `source` = `"detected"`|`"config"`) and `display`
+  (resolved resolution/terminal/margin/geometry).
+- `McpServer` gained `display: Arc<Mutex<DisplaySettings>>` and
+  `last_session: Arc<Mutex<Option<String>>>` (Arc because `McpServer` derives
+  Clone; Mutex isn't Clone).
+
+### Live-verified (operator directive: "always detect the session resolution")
+- herdr `default` session detected at **165x50** (161×49 pane + 4×1 chrome);
+  the display xterm relaunches at `-geometry 165x50+126+39` — full session
+  visible, nothing clipped. The whole point of the earlier `TV_TERMINAL=165x50`
+  hand-set is now detected automatically.
+- With a deliberately-wrong `TV_TERMINAL=111x22` in the env, `mirror_session`
+  still launched at the **detected** 165x50 (proves detection overrides config).
+- `macbook-pro-13-2001` profile saved via `save_profile` tool →
+  `profiles/macbook-pro-13-2001.json` = `{resolution 1280x720, terminal 165x50,
+  margin 0.05, geometry ""}`.
+
+### Gotchas (learned live)
+- **`herdr api snapshot` does not echo its socket** and both herdr sessions share
+  the `w1` workspace + overlapping pane/tab ids, so a cross-session snapshot has
+  **no reliable discriminator** to reject. Observed rare (~1-5%) intermittent
+  `detected:80x24` in `pipeline_status` = tv-demo's 76×23 + chrome served
+  through the default socket. The mirror launch itself was **never** observed
+  wrong; only the status report. Documented in `src/mux/herdr.rs`; best-effort
+  by design, config fallback covers it.
+- `McpServer` is `#[derive(Clone)]` → overlay fields must be `Arc<Mutex<..>>`.
+- Meta-test `test_no_production_unwrap` scans `src/mcp` including
+  `#[cfg(test)]` blocks → Mutex locks use
+  `unwrap_or_else(|poisoned| poisoned.into_inner())`.
+- herdr driver calls that must hit a *different* session than the driver's own
+  socket (`session_size`) go through `herdr_json_at(&socket, ...)` with
+  `HERDR_SOCKET_PATH` set per-call; `session list` needs the full argv
+  `["herdr","session","list"]` (a missing `herdr` prefix made every lookup
+  fail — regression test `test_herdr_session_size_detects_and_adds_chrome`
+  asserts the argv).
+
+### Tests
+33 pass (`tests/mcp_tests.rs` + `tests/cast_tv_tests.rs`): herdr session_size
+detect/degrade, tmux detect/degrade, set_config validate-before-apply /
+apply-without-relaunch / relaunch-running-display, save/load profile roundtrip,
+unsafe-name rejection, mirror_session auto-detect argv, pipeline_status
+session+display blocks, tool router registers all 10.

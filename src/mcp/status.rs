@@ -36,6 +36,19 @@ impl McpServer {
         let ffmpeg = self.pgrep_pids("ffmpeg");
         let hls_server = self.pgrep_pids("hls_server");
         let cycle_loop = self.pgrep_pids("herdr tab focus");
+        // The effective display settings (runtime overlay over the env config)
+        // and the mirrored session's auto-detected size, so a client can see
+        // what the display xterm will actually run at and where it came from.
+        let (res_str, term_str, margin, geometry) = self.display_settings();
+        let last_session = self
+            .last_session_guard()
+            .clone()
+            .unwrap_or_else(|| self.config.mux_session.clone());
+        let session_size = self.mux.session_size(&last_session).ok().flatten();
+        let (session_term, session_source) = match session_size {
+            Some((cols, rows)) if cols > 0 && rows > 0 => (format!("{cols}x{rows}"), "detected"),
+            _ => (term_str.clone(), "config"),
+        };
         json!({
             "mux": {
                 "session": self.config.mux_session,
@@ -57,6 +70,18 @@ impl McpServer {
                     .as_deref()
                     .map(|detected| detected != self.config.tv_resolution)
                     .unwrap_or(false),
+            },
+            "session": {
+                "name": last_session,
+                "detected": session_size.map(|(cols, rows)| format!("{cols}x{rows}")),
+                "effective_terminal": session_term,
+                "source": session_source,
+            },
+            "display": {
+                "resolution": res_str,
+                "terminal": term_str,
+                "margin": margin,
+                "geometry": geometry,
             },
             "hls": hls_state(&self.config.hls_dir),
         })
