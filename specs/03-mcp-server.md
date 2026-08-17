@@ -2,9 +2,14 @@
 
 - **Project**: `/projects/chromecast-tv-mirror`
 - **Priority**: the operator's next must after the live-framebuffer milestone: an AI agent must be able to drive the Chromecast and the TV terminal stack from Claude Code, and see its own interaction on the TV
-- **Status**: SPECIFIED — not yet dispatched · *(lifecycle: SPECIFIED → IN PROGRESS
-  on dispatch → IMPLEMENTED — awaiting review → DONE after the orchestrator
-  commits and updates HANDOFF.md)*
+- **Status**: **IMPLEMENTED — awaiting review** (2026-08-17). All three parts
+  landed and are orchestrator-committed: part 1 (`d539eba`, mux dual-driver +
+  seams), part 2 (`3f75787`, McpServer + 7 tools + `serve_stdio`), part 3
+  (`beda887`, E2E stdio + R10 acceptance). Exit criteria: 13/13 + 13/13 + 14/14.
+  Next: phase-8 live TV verification (orchestrator/operator: `claude mcp add`,
+  tool calls on the TV, tmux parity), then DONE. · *(lifecycle: SPECIFIED → IN
+  PROGRESS on dispatch → IMPLEMENTED — awaiting review → DONE after the
+  orchestrator commits and updates HANDOFF.md)*
 - **Split for dispatch (2026-08-16)**: implemented as three parts —
   `03-mcp-server-part1.md` (mux core + mcp foundation + unit tests),
   `03-mcp-server-part2.md` (server surface + bin), `03-mcp-server-part3.md`

@@ -2,9 +2,13 @@
 
 - **Project**: `/projects/chromecast-tv-mirror`
 - **Priority**: prove the whole server over a real stdio pipe — the E2E handshake and the R10 acceptance test that a server corrupting stdout or panicking on a tool error must fail
-- **Status**: SPECIFIED — not yet dispatched · *(lifecycle: SPECIFIED → IN PROGRESS
-  on dispatch → IMPLEMENTED — awaiting review → DONE after the orchestrator
-  commits and updates HANDOFF.md)*
+- **Status**: **DONE** — implemented by pi-workhorse (deepseek-v4-flash),
+  orchestrator-reviewed and committed 2026-08-17 (commit `beda887`); 14/14 exit
+  criteria green (incl. wrong-version-first proof); HANDOFF updated. Master
+  spec-03 is now IMPLEMENTED — awaiting review; phase-8 live TV verification is
+  the next orchestrator/operator step. · *(lifecycle: SPECIFIED → IN PROGRESS on
+  dispatch → IMPLEMENTED — awaiting review → DONE after the orchestrator commits
+  and updates HANDOFF.md)*
 - **Source**: operator requirement: MCP-over-stdio Chromecast control server; split of specs/03-mcp-server.md after two stalled workhorse runs (2026-08-16)
 - **Depends-On**: **`specs/03-mcp-server-part2.md` MUST have landed first** (the `McpServer`, `bin/mcp-server.rs`, and the mux/Runner seams). The master spec `specs/03-mcp-server.md` is the source of truth.
 
