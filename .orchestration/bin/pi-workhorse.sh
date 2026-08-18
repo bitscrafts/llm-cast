@@ -56,6 +56,39 @@ resolve_orch_home() {
 ORCH_HOME="$(resolve_orch_home)"
 [ -f "$ORCH_HOME/config.env" ] && . "$ORCH_HOME/config.env"
 
+# Load provider API keys so the harness works in ANY invocation context —
+# foreground, background, cron, daemon (the overnight local-worker case). The
+# bundle ships no credentials; each machine configures them in
+# ~/.hermes/.env or the project's .env. Source it WITHOUT clobbering keys
+# already present in the ambient environment (exported > .env).
+_load_env_keys() {
+    local envfile
+    for envfile in "${PI_ENV_FILE:-}" "$HOME/.hermes/.env" "$ROOT/.env" "$PWD/.env"; do
+        [ -n "$envfile" ] && [ -f "$envfile" ] || continue
+        while IFS= read -r line || [ -n "$line" ]; do
+            case "$line" in
+                ''|\#*) continue ;;
+                export\ *) line="${line#export }" ;;
+            esac
+            case "$line" in
+                *=*)
+                    local name="${line%%=*}"
+                    name="${name%"${name##*[![:space:]]}"}"  # trim trailing ws
+                    case "$name" in [A-Za-z_][A-Za-z0-9_]* ) ;; *) continue ;; esac
+                    # do-not-clobber: an already-set key wins over the file
+                    if [ -z "${!name:-}" ]; then
+                        local val="${line#*=}"
+                        val="${val%\"}"; val="${val#\"}"; val="${val%\'}"; val="${val#\'}"
+                        export "$name=$val"
+                    fi
+                    ;;
+            esac
+        done < "$envfile"
+        break  # first env file that exists wins
+    done
+}
+_load_env_keys
+
 # pi must be resolvable from the environment: PATH, or PI_BIN. No hardcoded
 # fallback path -- this bundle must be replicable on any host.
 PI="${PI_BIN:-$(command -v pi 2>/dev/null || true)}"
@@ -75,6 +108,21 @@ session_dir_for() {   # one session per spec, so repair keeps context
     local spec="$2"
     local d="$root/_tmp/pi-sessions/$(basename "$spec" .md)"
     mkdir -p "$d"; echo "$d"
+}
+
+# Did the workhorse make ANY tool calls in its pi session log? A worker that
+# called tools is actively working (reading, exploring) even if it has not
+# written files yet — a slow local model legitimately spends its first turns
+# researching before the first write. A true stall emits ZERO tool calls.
+# pi sessions are JSONL files under the per-spec session dir.
+worker_made_tool_calls() {
+    local sd="$1"
+    [ -d "$sd" ] || return 1
+    # Look for assistant tool_calls or toolResult messages in any session file.
+    if grep -rqE '"role"[[:space:]]*:[[:space:]]*"(assistant|tool)"|toolResult|"tool_calls"' "$sd" 2>/dev/null; then
+        return 0
+    fi
+    return 1
 }
 
 # The gate ships WITH the bundle. It detects the project type itself and falls
@@ -289,21 +337,38 @@ FAIL if any requirement is unimplemented or any test was weakened."
     # once ran 40 minutes on a large repo, wrote nothing, and never reached the
     # gate, so escalation had to be done by hand. A timeout (124) or no
     # implementation-relevant change is the signal.
-    if [ "$imp_rc" -eq 124 ] || { ! implementation_changed && ! grep -qE '^\s*SPEC-DEFECT:' "$imp_log"; }; then
-        if [ "$imp_rc" -eq 124 ]; then
-            echo "== phase 2: implement timed out -- escalating =="
-        else
-            echo "== phase 2: implement wrote no implementation files -- escalating =="
-        fi
+    #
+    # IMPORTANT (2026-08-18, laguna worker): a SLOW local model (12.5 tok/s)
+    # legitimately spends its first turns researching — reading the spec and
+    # modules — before writing any file. It makes tool calls (active work) but
+    # `implementation_changed` is still false. Escalating here cuts off a
+    # working worker and burns a cloud-model turn. So escalation on "no files
+    # yet" fires ONLY when the worker ALSO made no tool calls (a true stall).
+    # A worker that called tools but wrote nothing yet falls through to the
+    # gate+repair ladder with the SAME model, which gives it more chances.
+    sd_run2="$(session_dir_for "$ROOT" "$SPEC")"
+    if [ "$imp_rc" -eq 124 ]; then
+        echo "== phase 2: implement timed out -- escalating =="
         "$SELF" implement "$SPEC" "$ROOT" --escalate 2>&1 | tee "$imp_log"
         check_no_commit
-        if ! implementation_changed && ! grep -qE '^\s*SPEC-DEFECT:' "$imp_log"; then
-            echo
-            echo "STOPPED: implement produced no implementation files even after escalation."
-            echo "The spec is probably too large for a workhorse on this repo. Narrow it."
-            rm -f "$imp_log"
-            exit 6
-        fi
+    elif { ! implementation_changed && ! worker_made_tool_calls "$sd_run2" \
+             && ! grep -qE '^\s*SPEC-DEFECT:' "$imp_log"; }; then
+        echo "== phase 2: implement wrote no files AND made no tool calls -- escalating =="
+        "$SELF" implement "$SPEC" "$ROOT" --escalate 2>&1 | tee "$imp_log"
+        check_no_commit
+    elif ! implementation_changed && ! grep -qE '^\s*SPEC-DEFECT:' "$imp_log"; then
+        # Worker made tool calls but wrote nothing yet — it is still working.
+        # Give it the gate+repair ladder with the SAME model instead of
+        # escalating. (The gate will fail on no implementation and repair
+        # continues the session, letting a slow worker keep going.)
+        echo "== phase 2: worker made tool calls but wrote no files yet -- continuing (not escalating) =="
+    fi
+    if ! implementation_changed && ! grep -qE '^\s*SPEC-DEFECT:' "$imp_log" && ! worker_made_tool_calls "$sd_run2"; then
+        echo
+        echo "STOPPED: implement produced no implementation files and no tool calls even after escalation."
+        echo "The spec is probably too large for a workhorse on this repo. Narrow it."
+        rm -f "$imp_log"
+        exit 6
     fi
 
     # A reported spec defect ends the loop here. Continuing would review an
