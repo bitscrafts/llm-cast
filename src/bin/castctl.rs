@@ -1,6 +1,6 @@
 //! castctl — operator smoke-test binary for the milestone-1 device test.
 //!
-//! Usage: castctl [--image] [--type CONTENT-TYPE] <device-ip> <url>
+//! Usage: castctl [--ping] [--image] [--type CONTENT-TYPE] <device-ip> <url>
 //!
 //! Uses the given device address (port 8009), launches the Default Media
 //! Receiver (CC1AD845) and sends the Cast v2 media/load for the URL. The
@@ -13,10 +13,15 @@
 //! Prints a clear PASS/FAIL line and exits non-zero on failure.
 //!
 //! Built without the `cast` feature it compiles but sends no session.
+//!
+//! `--ping` flag: checks TCP reachability to device:port 8009 with 3s timeout.
+//! Prints "reachable" (exit 0) or "unreachable: <err>" (exit 1).
 
 use std::env;
 use std::process::ExitCode;
+use std::time::Duration;
 
+use cast_tv_terminal::bin::ping_device;
 use cast_tv_terminal::cast::DeviceAddr;
 
 /// Map a MIME content type to the Cast stream type the DMR expects.
@@ -37,6 +42,23 @@ fn stream_type_for(content_type: &str) -> &'static str {
 fn main() -> ExitCode {
     let args: Vec<String> = env::args().collect();
 
+    // Check for --ping flag first (works standalone, no url needed)
+    if let Some(first) = args.get(1) {
+        if first == "--ping" {
+            if let Some(ip) = args.get(2) {
+                let reachable = ping_device(ip, 8009, Duration::from_secs(3));
+                return if reachable {
+                    ExitCode::SUCCESS
+                } else {
+                    ExitCode::FAILURE
+                };
+            } else {
+                eprintln!("usage: castctl --ping <device-ip>");
+                return ExitCode::from(2);
+            }
+        }
+    }
+
     // Parse: [--image] [--type CT] <device-ip> <url>
     // Canonical HLS type by default — the DMR rejects the legacy
     // application/x-mpegURL for a custom-sender LOAD (confirmed on-device).
@@ -47,6 +69,9 @@ fn main() -> ExitCode {
     while let Some(arg) = iter.next() {
         match arg.as_str() {
             "--image" => content_type = "image/jpeg".to_string(),
+            "--ping" => {
+                // Handled above
+            }
             "--type" => match iter.next() {
                 Some(ct) => content_type = ct.clone(),
                 None => {
@@ -67,7 +92,7 @@ fn main() -> ExitCode {
         }
     }
     let (Some(ip), Some(url)) = (ip, url) else {
-        eprintln!("usage: castctl [--image] [--type CONTENT-TYPE] <device-ip> <url>");
+        eprintln!("usage: castctl [--ping] [--image] [--type CONTENT-TYPE] <device-ip> <url>");
         return ExitCode::from(2);
     };
 

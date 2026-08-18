@@ -75,7 +75,7 @@ exit code matches reachable/unreachable.
 - [ ] `cargo build --bin castctl` — compiles (N3)
 - [ ] `cargo test --test castctl_tests 2>&1 | grep -qE "^test result: ok\. [1-9]"` — tests ran (R1)
 - [ ] `cargo test` — whole suite passes (N3)
-- [ ] `grep -q 'connect_timeout' src/bin/castctl.rs` — the ping uses a bounded connect (R1)
+- [ ] `grep -q 'connect_timeout' src/bin.rs` — the ping uses a bounded connect (R1)
 - [ ] `cargo clippy --all-targets -- -D warnings` — clean (N3)
 - [ ] `cargo fmt -- --check` — formatted (N3)
 - [ ] `! grep -rn 'unwrap()\|expect(\|panic!' src/bin/castctl.rs` — no panics (N1)
