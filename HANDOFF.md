@@ -1105,3 +1105,86 @@ pi-workhorse worker: **11/11 exit criteria PASS, quality gate PASS**, committed
 **Servers:** laguna 131K (8084), ornith-35b-moe 131K (8085). Worker = ornith-35b-moe.
 **Memory keys:** local-workhorse-success, laguna-131k-context, local-model-test-timeout.
 **Next:** spec-04-part2 (cast-port wiring) and part3 (status surfacing).
+
+---
+
+## 2026-08-18 — SPEC-04 PART 2 LANDED: wire resolved device into cast port + status (R5/R6)
+
+### What was DONE this session
+- **TDD first**: appended the four spec-04 part-2 contract tests to
+  `tests/mcp_tests.rs` before any production change:
+  - `test_production_cast_port_uses_resolved_host` (`#[cfg(not(feature="cast"))]`,
+    R5): `production_cast_port_with(DiscoveredDevice{9.9.9.9,8009,Mdns})` then
+    call → stub `Err` string contains `9.9.9.9` (proves the closure captured the
+    resolved host without panicking / touching the net).
+  - `test_one_arg_cast_port_wraps` (`#[cfg(not(feature="cast"))]`, R5/N5):
+    `production_cast_port("10.10.10.208")` then call → stub error contains
+    `10.10.10.208` (resolved via StaticResolver → Config source, one-arg form
+    still works and delegates).
+  - `test_pipeline_status_has_cast_block` (R6): `McpServer` with a resolved
+    device wired via `set_discovered_device` → `pipeline_status_json()` has
+    `cast.configured_device` = "10.10.10.208", `cast.discovered_device` =
+    "192.168.1.55:8009", `cast.source` = "mdns".
+  - `test_pipeline_status_cast_block_when_no_device` (R6): no resolved device
+    → `cast` object still present, `discovered_device` null, `source` "unknown".
+- **Production code** (only the four files the spec lists):
+  - `src/mcp/cast.rs`: added `production_cast_port_with(DiscoveredDevice) ->
+    CastPort` (closure builds `DeviceAddr { host, port }` per call from the
+    resolved device; no-cast stub names the resolved `host:port`); refactored
+    `production_cast_port(device: String)` to a thin wrapper calling
+    `production_cast_port_with(resolve_device(&device))` (N5: one-arg call
+    sites unchanged).
+  - `src/mcp/mod.rs`: added `discovered_device: Arc<Mutex<Option<DiscoveredDevice>>>`
+    field to `McpServer` (init `None`) + `set_discovered_device(Option<…>)`
+    setter (poison-recovering via the new `discovered_device_guard` helper).
+  - `src/mcp/display.rs`: added `discovered_device_guard()` helper next to the
+    existing `display_guard`/`last_session_guard` (poison-recovering, avoids
+    `.unwrap()` so the global `test_no_production_unwrap` gate stays green).
+  - `src/mcp/status.rs`: added a top-level `cast` object to
+    `pipeline_status_json` via a new `cast_block(configured, discovered)` fn
+    — always present; `discovered_device` = `"host:port"` or null; `source` =
+    "mdns"|"config"|"unknown".
+- **Not modified** (G7 + spec "Files to Modify"): `src/bin/mirror.rs`,
+  `src/bin/castctl.rs`, `src/cast/discovery.rs`, `src/cast/sender.rs`,
+  `src/bin/mcp-server.rs`, `specs/*`, `.orchestration/`. The mcp-server binary
+  still calls the one-arg `production_cast_port`; it does NOT yet call
+  `set_discovered_device`, so its live `pipeline_status` will show
+  `discovered_device: null, source: "unknown"` until part 3 wires the binary.
+  This matches the spec's file list (the binary is excluded) and the tests,
+  which inject via `set_discovered_device`.
+
+### Outcome — gate GREEN
+`/projects/chromecast-tv-mirror/.orchestration/lib/quality-gate.sh` exit 0:
+```
+  cargo fmt --check            PASS
+  cargo check                  PASS
+  cargo clippy -D warnings     PASS
+  cargo test                   PASS
+QUALITY GATE: PASSED (rust)
+```
+Raw test result lines (unsummed):
+- `cargo test --test mcp_tests`: `test result: ok. 41 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s`
+- `cargo test --test cast_tv_tests`: `test result: ok. 34 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s`
+
+All spec-04 part-2 exit criteria verified:
+- `grep 'production_cast_port_with' src/mcp/cast.rs` ✅ (R5)
+- `grep '"cast"' src/mcp/status.rs` ✅ (R6)
+- `configured_device` / `discovered_device` / `"source"` all present in
+  `src/mcp/status.rs` ✅ (R6)
+- `! grep 'unwrap()\|expect(\|panic!' src/mcp/{cast,status,mod}.rs` ✅ (N1)
+- `! git diff --name-only | grep src/bin/(mirror|castctl).rs` ✅ (N5/G7)
+- one-arg `production_cast_port` still exists and delegates ✅ (prose 1)
+
+### Spec defects found
+None. The spec was followed exactly; every premise in "Verified Premises"
+held (`DeviceAddr { host, port }`, `DiscoveredDevice { host, port, source }`,
+`resolve_device` total, `production_cast_port(device: String)` one-arg form,
+`src/bin/mcp-server.rs:47` wiring).
+
+### Next steps (part 3)
+- Wire `src/bin/mcp-server.rs` to resolve once at startup and call
+  `server.set_discovered_device(Some(resolved))` so the live binary surfaces
+  the real mDNS/config source in `pipeline_status` (currently null/unknown by
+  design — the binary is out of part-2's file list).
+- spec-04 part 3 (per the spec title "part 2/3") presumably covers the binary
+  wiring + any mDNS-feature integration tests.

@@ -6,6 +6,7 @@ use serde_json::json;
 
 use super::display::{xterm_font_size, xvfb_resolution, XTERM_TITLE};
 use super::McpServer;
+use crate::cast::{DiscoveredDevice, DiscoverySource};
 
 impl McpServer {
     /// R7 — collect the pipeline state into a single JSON text block:
@@ -49,6 +50,7 @@ impl McpServer {
             Some((cols, rows)) if cols > 0 && rows > 0 => (format!("{cols}x{rows}"), "detected"),
             _ => (term_str.clone(), "config"),
         };
+        let cast = cast_block(&self.config.cast_device, &self.discovered_device_guard());
         json!({
             "mux": {
                 "session": self.config.mux_session,
@@ -84,8 +86,34 @@ impl McpServer {
                 "geometry": geometry,
             },
             "hls": hls_state(&self.config.hls_dir),
+            "cast": cast,
         })
         .to_string()
+    }
+}
+
+/// R6 — the `cast` status block: always present. `configured_device` is the
+/// raw config string; `discovered_device` is `"host:port"` when a device was
+/// resolved (null otherwise); `source` is `"mdns"`, `"config"`, or `"unknown"`
+/// when no device has been resolved yet.
+fn cast_block(configured_device: &str, discovered: &Option<DiscoveredDevice>) -> serde_json::Value {
+    match discovered {
+        Some(dev) => {
+            let source = match dev.source {
+                DiscoverySource::Mdns => "mdns",
+                DiscoverySource::Config => "config",
+            };
+            json!({
+                "configured_device": configured_device,
+                "discovered_device": format!("{}:{}", dev.host, dev.port),
+                "source": source,
+            })
+        }
+        None => json!({
+            "configured_device": configured_device,
+            "discovered_device": serde_json::Value::Null,
+            "source": "unknown",
+        }),
     }
 }
 

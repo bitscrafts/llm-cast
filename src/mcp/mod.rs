@@ -20,6 +20,7 @@ use rmcp::model::{CallToolResult, ContentBlock, ErrorData};
 use rmcp::schemars;
 use rmcp::{tool, tool_handler, tool_router, ServerHandler, ServiceExt};
 
+use crate::cast::DiscoveredDevice;
 use crate::mux::Mux;
 
 use self::cast::{CastPort, CastUrlArgs};
@@ -43,6 +44,9 @@ pub struct McpServer {
     /// The session most recently mirrored, for `set_config`/`load_profile`
     /// relaunches (falls back to `config.mux_session`).
     pub(crate) last_session: Arc<Mutex<Option<String>>>,
+    /// The mDNS-resolved cast device (set when the cast port is wired with a
+    /// resolved device); `None` until then. Read by `pipeline_status_json`.
+    pub(crate) discovered_device: Arc<Mutex<Option<DiscoveredDevice>>>,
 }
 
 /// Tool arguments for `cast_url`.
@@ -141,7 +145,14 @@ impl McpServer {
             cast_port,
             display: Arc::new(Mutex::new(DisplaySettings::default())),
             last_session: Arc::new(Mutex::new(None)),
+            discovered_device: Arc::new(Mutex::new(None)),
         }
+    }
+
+    /// R6 — record the mDNS-resolved cast device so `pipeline_status_json` can
+    /// surface it in the `cast` block. `None` clears it (source → "unknown").
+    pub fn set_discovered_device(&self, device: Option<DiscoveredDevice>) {
+        *self.discovered_device_guard() = device;
     }
 
     /// R1 — serve the MCP protocol over stdio until the client disconnects.

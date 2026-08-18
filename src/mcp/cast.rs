@@ -5,6 +5,7 @@
 use std::sync::Arc;
 
 use super::errors::McpServerError;
+use crate::cast::{resolve_device, DiscoveredDevice};
 
 /// What a `cast_url` tool invocation asks to play.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -50,36 +51,52 @@ pub fn parse_stream_type(content_type: &str) -> StreamKind {
 /// tests never touch a device.
 pub type CastPort = Arc<dyn Fn(CastUrlArgs) -> Result<String, McpServerError> + Send + Sync>;
 
-/// The production [`CastPort`]: a real `send_media_load` behind the `cast`
-/// feature; a stub error naming the missing feature otherwise.
-pub fn production_cast_port(device: String) -> CastPort {
+/// The production [`CastPort`] built from a resolved device: a real
+/// `send_media_load` behind the `cast` feature; a stub error naming the
+/// resolved host otherwise. The closure builds `DeviceAddr { host, port }`
+/// per call from the resolved device instead of `DeviceAddr::new(device)`.
+pub fn production_cast_port_with(device: DiscoveredDevice) -> CastPort {
     #[cfg(feature = "cast")]
     {
         use crate::cast::sender::DeviceAddr;
         use crate::cast::session::{send_media_load, StreamType};
 
+        let host = device.host.clone();
+        let port = device.port;
         Arc::new(move |args: CastUrlArgs| {
             let stream_type = match stream_type_for(&args.content_type) {
                 StreamKind::None => StreamType::None,
                 StreamKind::Buffered => StreamType::Buffered,
                 StreamKind::Live => StreamType::Live,
             };
-            let addr = DeviceAddr::new(device.clone());
+            let addr = DeviceAddr {
+                host: host.clone(),
+                port,
+            };
             send_media_load(&addr, &args.url, &args.content_type, stream_type)
-                .map_err(|e| McpServerError::Cast(format!("media load to {device}: {e}")))?;
+                .map_err(|e| McpServerError::Cast(format!("media load to {host}:{port}: {e}")))?;
             Ok(format!(
-                "cast requested to {device}: {} ({})",
+                "cast requested to {host}:{port}: {} ({})",
                 args.url, args.content_type
             ))
         })
     }
     #[cfg(not(feature = "cast"))]
     {
-        let _ = device;
-        Arc::new(|_args: CastUrlArgs| {
-            Err(McpServerError::Cast(
-                "cannot cast: built without the cast feature".to_string(),
-            ))
+        let host = device.host.clone();
+        let port = device.port;
+        Arc::new(move |_args: CastUrlArgs| {
+            Err(McpServerError::Cast(format!(
+                "cannot cast to {host}:{port}: built without the cast feature"
+            )))
         })
     }
+}
+
+/// The production [`CastPort`]: resolve the configured device (mDNS when the
+/// feature is on, else the static fallback) and build the closure from the
+/// resolved device. Thin wrapper over [`production_cast_port_with`] so the
+/// `mirror.rs`/`castctl.rs` one-arg call sites keep compiling unchanged (N5).
+pub fn production_cast_port(device: String) -> CastPort {
+    production_cast_port_with(resolve_device(&device))
 }

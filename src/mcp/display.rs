@@ -17,6 +17,7 @@ use super::errors::McpServerError;
 use super::runner::herdr_env_keys;
 use super::sizing::{fit, geometry_at, Resolution, TerminalSize};
 use super::McpServer;
+use crate::cast::DiscoveredDevice;
 
 /// Title marker of the display xterm; `pgrep -f` matches its `-T` title.
 pub(crate) const XTERM_TITLE: &str = "herdr-tv";
@@ -177,6 +178,14 @@ impl McpServer {
     /// xterm to the same session it was showing.
     pub(crate) fn last_session_guard(&self) -> MutexGuard<'_, Option<String>> {
         self.last_session
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    /// The mDNS-resolved cast device (poison-recovering), read by
+    /// `pipeline_status_json` for the `cast` block.
+    pub(crate) fn discovered_device_guard(&self) -> MutexGuard<'_, Option<DiscoveredDevice>> {
+        self.discovered_device
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
     }

@@ -9,6 +9,8 @@ use std::sync::{Arc, Mutex};
 
 #[cfg(not(feature = "cast"))]
 use cast_tv_terminal::mcp::cast::production_cast_port;
+#[cfg(not(feature = "cast"))]
+use cast_tv_terminal::mcp::cast::production_cast_port_with;
 use cast_tv_terminal::mcp::cast::{stream_type_for, CastPort, CastUrlArgs, StreamKind};
 use cast_tv_terminal::mcp::config::Config;
 use cast_tv_terminal::mcp::errors::McpServerError;
@@ -2348,6 +2350,99 @@ fn test_resolve_device_uses_mdns_result() {
     assert_eq!(dev.host, "192.168.1.55");
     assert_eq!(dev.port, 8009);
     assert_eq!(dev.source, DiscoverySource::Mdns);
+}
+
+// ===========================================================================
+// spec-04 part 2 — wire the resolved device into the cast port + status (R5,R6)
+// ===========================================================================
+
+#[cfg(not(feature = "cast"))]
+#[test]
+fn test_production_cast_port_uses_resolved_host() {
+    // R5 — the two-arg form captures the resolved host/port into the closure
+    // without panicking. Without the cast feature the stub errors, proving the
+    // closure was built (and never touched the network).
+    let port = production_cast_port_with(DiscoveredDevice {
+        host: "9.9.9.9".to_string(),
+        port: 8009,
+        source: DiscoverySource::Mdns,
+    });
+    let err = port(CastUrlArgs {
+        url: "http://example/live.m3u8".to_string(),
+        content_type: "application/vnd.apple.mpegurl".to_string(),
+    })
+    .unwrap_err();
+    // The stub names the resolved host so a caller can see what was wired in.
+    assert!(
+        err.to_string().contains("9.9.9.9"),
+        "stub error must name the resolved host: {err}"
+    );
+}
+
+#[cfg(not(feature = "cast"))]
+#[test]
+fn test_one_arg_cast_port_wraps() {
+    // R5/N5 — the one-arg form still works and delegates to the two-arg form
+    // via resolve_device (StaticResolver → Config source without mdns). The
+    // stub error contains the configured host.
+    let port = production_cast_port("10.10.10.208".to_string());
+    let err = port(CastUrlArgs {
+        url: "http://example/live.m3u8".to_string(),
+        content_type: "application/vnd.apple.mpegurl".to_string(),
+    })
+    .unwrap_err();
+    assert!(
+        err.to_string().contains("10.10.10.208"),
+        "one-arg stub error must name the configured host: {err}"
+    );
+}
+
+#[tokio::test]
+async fn test_pipeline_status_has_cast_block() {
+    // R6 — a resolved device wired into the server surfaces in the cast block.
+    let config = Arc::new(test_config());
+    let server = McpServer::new(
+        config.clone(),
+        Arc::new(FakeRunner::new()),
+        Arc::new(FakeMux::new()),
+        unused_cast_port(),
+    );
+    server.set_discovered_device(Some(DiscoveredDevice {
+        host: "192.168.1.55".to_string(),
+        port: 8009,
+        source: DiscoverySource::Mdns,
+    }));
+
+    let status: serde_json::Value = serde_json::from_str(&server.pipeline_status_json()).unwrap();
+    let cast = &status["cast"];
+    assert!(
+        cast.is_object(),
+        "cast block must always be present: {status}"
+    );
+    assert_eq!(cast["configured_device"], "10.10.10.208");
+    assert_eq!(cast["discovered_device"], "192.168.1.55:8009");
+    assert_eq!(cast["source"], "mdns");
+}
+
+#[tokio::test]
+async fn test_pipeline_status_cast_block_when_no_device() {
+    // R6 — with no resolved device the cast block is still present, with a null
+    // discovered_device and source "unknown".
+    let server = McpServer::new(
+        Arc::new(test_config()),
+        Arc::new(FakeRunner::new()),
+        Arc::new(FakeMux::new()),
+        unused_cast_port(),
+    );
+    let status: serde_json::Value = serde_json::from_str(&server.pipeline_status_json()).unwrap();
+    let cast = &status["cast"];
+    assert!(
+        cast.is_object(),
+        "cast block must always be present: {status}"
+    );
+    assert_eq!(cast["configured_device"], "10.10.10.208");
+    assert_eq!(cast["discovered_device"], serde_json::Value::Null);
+    assert_eq!(cast["source"], "unknown");
 }
 
 /// R3 — MdnsResolver exists and exposes the documented fields when the feature
