@@ -192,7 +192,10 @@ FAIL if any requirement is unimplemented or any test was weakened."
     [ -n "$PROVIDER" ] && ARGS+=(--provider "$PROVIDER")
     # pi auto-discovers only its user-wide skills dir. A project-local bundle
     # points at its own with --skill, which accepts a directory and repeats.
-    for sk in "$ORCH_HOME"/pi/skills/*/; do
+    # EXPLICIT list, not a glob: the bundle may carry other roles (e.g. the
+    # planner skill used by pi-plan.sh) whose instructions must never leak
+    # into implement/repair/review invocations.
+    for sk in "$ORCH_HOME"/pi/skills/implementer "$ORCH_HOME"/pi/skills/reviewer; do
         [ -f "$sk/SKILL.md" ] && ARGS+=(--skill "$sk")
     done
     ARGS+=(--append-system-prompt "$(cat "$DIRECTIVES")")

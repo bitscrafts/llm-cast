@@ -67,6 +67,47 @@ commit — is never run for you.
 
 ---
 
+## The improved implementer workflow: planner → workhorse → observer
+
+Two roles complete the loop around the workhorse. Both live in this bundle.
+
+**The planner — `bin/pi-plan.sh`.** Turns a feature brief (or a thin draft
+spec) into implementable, numbered spec parts — the contract the workhorse
+will follow. Same no-commit law as the workhorse (exit 7), opposite
+deliverable: the planner's product IS the spec. It runs on the planner tier
+(`ORCH_PLANNER_MODEL`, defaulting to the escalation model) with its own
+directives (`pi/DIRECTIVES-planner.md`) and role skill
+(`pi/skills/planner/`):
+
+```bash
+pi-plan.sh plan briefs/02-hls.md <project_root>
+# model/provider override for one run:
+pi-plan.sh plan briefs/02-hls.md . deepseek-v4-pro deepseek
+```
+
+The planner splits features that outgrow ~7 exit criteria into numbered parts
+(`specs/NN-<feature>-partM.md`), each self-contained with its own TDD
+contract and machine-checkable exit criteria. Exit 6: it produced no spec
+files; exit 7: it committed (unwind it).
+
+**The observer — `claude/skills/sdd-observe/`.** The orchestrator watches the
+whole interaction without touching the tree: stages workers visibly in herdr
+tabs on the TV-mirrored session, reads working→idle transitions and pane
+output, records each phase in agent-memory, and intervenes ONLY on defined
+triggers (stall, gate failing past repair rounds, SPEC-DEFECT, exit 6/7,
+criteria unmet). Phase 7 — read the diff, commit — belongs to the observer.
+
+**The flow, end to end (no pidag involved):**
+
+```
+brief → pi-plan.sh (planner tier) → specs/NN-<feature>[-partM].md
+      → pi-workhorse.sh run <part> → implement → gate → repair → review
+      → validate → HANDOFF diary
+      → observer (sdd-observe): read diff, commit, record, analyse
+```
+
+---
+
 ## The skills, and how they chain
 
 ```
@@ -93,8 +134,10 @@ sdd-orchestrate                        (Claude — the master loop)
 | `spec-author` | Claude | 1 | write a contract a cheap model can implement without judgement |
 | `pi-delegate` | Claude | 2–6 | tool grants, sessions, escalation, token discipline |
 | `verify-and-commit` | Claude | 7 | read the load-bearing diff, confirm architecture, commit |
+| `sdd-observe` | orchestrator | all | watch a run end to end; intervene only on defined triggers |
 | `implementer` | pi | 2, 4 | tests first, then code, until the gate passes |
 | `reviewer` | pi | 5 | read-only review against the spec |
+| `planner` | pi | 0 | turn a brief into implementable, numbered spec parts |
 
 Plus:
 
@@ -136,6 +179,16 @@ Claude — the only such strings are the default skills directory path, and
 Any agent that reads instructions and runs shell commands can drive this. The
 orchestrator's model and the workhorse's model are independent choices: the
 first plans, judges and commits; the second implements.
+
+For Hermes specifically, install the orchestrator skills into its skill tree:
+
+```bash
+./install.sh --orchestrator-dir ~/.hermes/skills
+```
+
+(`sdd-observe` is the one written with Hermes' observation loop in mind —
+herdr tabs, TV mirror, agent-memory recording — but it is plain Markdown and
+works for any orchestrator.)
 
 ## Why a directives file rather than `CLAUDE.md`
 
@@ -187,8 +240,10 @@ through the validator were wrong this way.
 | setting | default | meaning |
 |---|---|---|
 | `ORCH_MODEL` | *(empty)* | normal work; empty means pi's own config. Leave empty. |
-| `ORCH_ESCALATION_MODEL` | `glm-5.2:cloud` | used with `--escalate` |
-| `ORCH_ESCALATION_PROVIDER` | `ollama-cloud` | provider for the above |
+| `ORCH_ESCALATION_MODEL` | `z-ai/glm-5.2` | used with `--escalate` |
+| `ORCH_ESCALATION_PROVIDER` | `nvidia` | provider for the above |
+| `ORCH_PLANNER_MODEL` | `$ORCH_ESCALATION_MODEL` | planner tier for `pi-plan.sh` |
+| `ORCH_PLANNER_PROVIDER` | `$ORCH_ESCALATION_PROVIDER` | provider for the planner |
 | `ORCH_MAX_REPAIR_ROUNDS` | `2` | repair attempts before escalating |
 | `ORCH_MAX_TOOL_ITERATIONS` | `60` | bound on the agent's tool loop |
 | `ORCH_REQUEST_TIMEOUT` | `600` | seconds per turn |
