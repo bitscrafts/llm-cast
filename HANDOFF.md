@@ -1,11 +1,46 @@
 # HANDOFF — chromecast-tv-mirror
 
-**Status**: GREEN — **spec-03 part 3 (E2E stdio + R10 acceptance) LANDED**
-(2026-08-17): both E2E tests spawn the real `mcp-server` binary against the
-fake herdr shim; wrong-version-first proof done (stub println+unwrap failed
-both, fixed version passes); 52/52 tests; gate exit 0; all 13 exit criteria
-green. Prior baseline: spec-03 part 2 landed (McpServer + 7 tools +
-`serve_stdio()`), gate 13/13.
+**Status**: GREEN — **spec-05 (castctl --ping) LANDED** (2026-08-18):
+added `--ping <ip>` flag to `castctl` (TCP reachability to :8009, 3s
+timeout, exit 0/1); new `src/bin.rs` exposes `ping_device(host, port,
+timeout)`; tests in `tests/castctl_tests.rs` + inline; gate exit 0.
+
+Prior: spec-03 part 3 (E2E stdio + R10 acceptance) LANDED (2026-08-17).
+
+---
+
+## 2026-08-18 — SPEC-05 LANDED: castctl --ping
+
+### What was DONE this session
+- **TDD first**: wrote `tests/castctl_tests.rs` (3 tests: reachable, unreachable,
+  timeout-bounded) per spec-05's TDD Contract.
+- **Production code**:
+  - New `src/bin.rs` — `pub fn ping_device(host, port, timeout) -> bool` using
+    `std::net::TcpStream::connect_timeout` + `ToSocketAddrs`; prints
+    `reachable` / `unreachable: <err>`; no panics/unwrap/expect in the path.
+  - `src/lib.rs` — added `pub mod bin;`.
+  - `src/bin/castctl.rs` — added `--ping <ip>` handling (standalone, no url
+    needed); 3s timeout to :8009; exit 0/1.
+- **Guardrails kept**: no changes to `mirror.rs`, `mcp-server.rs`, lib cast/serve,
+  specs, or `.orchestration/`.
+
+### Outcome — gate
+- `/projects/chromecast-tv-mirror/.orchestration/lib/quality-gate.sh` → exit 0.
+- Stages: fmt PASS · check PASS · clippy -D warnings PASS · test PASS.
+- test result lines (raw):
+  - `test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 3.00s` (castctl_tests)
+  - `test result: ok. 34 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s` (lib unit)
+  - `test result: ok. 41 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s` (lib + bin integrated)
+  - several `0 passed` bin test harnesses (no tests) — all ok.
+
+### Notes / spec defects
+- None. Spec-05 premises verified accurate; `connect_timeout` present; no panics
+  in the new path; `--ping` works standalone.
+
+### Next steps
+- Commit when reviewed (workhorse did not commit per G2).
+- Optionally extend `ping_device` to print to a writer param for easier
+  capture in future tests (not required by spec-05).
 
 ---
 
@@ -1209,3 +1244,21 @@ rescues it. The recipe for local-model success: agentic model + MoE + 131K ctx
 
 **Memory keys:** mdns-discovery-complete, local-workhorse-success,
 laguna-131k-context, local-model-test-timeout, ornith-also-read-only.
+
+## 2026-08-18 (cont.) — LAGUNA VERIFIED AS WORKHORSE (spec-05)
+
+**GREEN.** laguna-xs-2.1 (33B/3B MoE, **12.6 tok/s**) implemented spec-05
+(castctl --ping) end-to-end, committed `27ce2a9`, 7/7 exit criteria, gate green,
+functional test verified (reachable/rc 0 with listener on 8009).
+
+**The recipe that made laguna write code** (earlier failures were test bugs):
+1. Full wall-clock window — ORCH_PHASE_TIMEOUT=3600, never shell-kill <300s
+   (earlier 120s kills aborted laguna before its first write).
+2. **131K context** — the 32K server caused the 46K-token overflow.
+3. `--thinking off` — output budget not burned on reasoning.
+
+**Verdict:** laguna (12.6 tok/s) beats ornith (8.8) on velocity AND writes code.
+It is now the local workhorse.
+
+**Memory keys:** laguna-writes-code-verified, laguna-writes-code, laguna-fair-speed,
+laguna-131k-context, local-model-test-timeout, llamacpp-vs-ollama (2.16x faster).
