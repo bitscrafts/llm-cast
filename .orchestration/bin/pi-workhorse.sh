@@ -63,7 +63,7 @@ ORCH_HOME="$(resolve_orch_home)"
 # already present in the ambient environment (exported > .env).
 _load_env_keys() {
     local envfile
-    for envfile in "${PI_ENV_FILE:-}" "$HOME/.hermes/.env" "$ROOT/.env" "$PWD/.env"; do
+    for envfile in "${PI_ENV_FILE:-}" "$HOME/.hermes/.env" "${ROOT:-}/.env" "${PWD:-}/.env"; do
         [ -n "$envfile" ] && [ -f "$envfile" ] || continue
         while IFS= read -r line || [ -n "$line" ]; do
             case "$line" in
