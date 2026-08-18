@@ -1063,3 +1063,25 @@ stay within it. Smaller parts (5-7 criteria, fewer tools) would let laguna finis
 **Memory keys:** workspace/pi-orchestration/laguna-worker-gaps,
 workspace/pi-orchestration/laguna-worker-fixes,
 hermes-lnx-optimization/validation/laguna-real-spec
+
+## 2026-08-18 (cont.) — local coder workhorse research
+
+**Status: YELLOW** — systematic attempt to find a local model that writes code.
+
+**Three real findings (memory-stored):**
+1. My shell `timeout 90-120s` was killing pi before its real 300s budget — the
+   models were fine all along; with correct budget laguna+ornith respond in 6-7s.
+2. Small local models (laguna 2.1B, ornith-9B) don't self-propel to writing code —
+   they drift into read/grep/ls and never call write/edit (AGENTS.md P1 pattern).
+3. pi over-accumulates read tool results without compacting → context overflow
+   (laguna hit 46K > 32K server cap). settings.json has no compaction setting.
+
+**Candidates tried:** laguna (read-only), ornith-9B (read-only), qwen3.8-27B
+(1.75 tok/s too slow), qwen3.8-distill-35B-A3B (ROCmFPX, not CPU-loadable).
+
+**In progress:** Ornith-1.0-35B-MoE (agentic coder + 3B-active MoE + CPU GGUF)
+downloading to /projects/ornith-35b-moe-q8.gguf (19.8GB). Provider added
+(ornith-35b-moe-local, port 8082). Test: does it write code on spec-04-part1.
+
+**Memory keys:** local-model-test-timeout, ornith-also-read-only,
+laguna-context-overflow-pi, ornith-coder-candidate.
