@@ -1085,3 +1085,23 @@ downloading to /projects/ornith-35b-moe-q8.gguf (19.8GB). Provider added
 
 **Memory keys:** local-model-test-timeout, ornith-also-read-only,
 laguna-context-overflow-pi, ornith-coder-candidate.
+
+## 2026-08-18 (cont.) — BREAKTHROUGH: local agentic workhorse succeeded
+
+**Status: GREEN for spec-04 part 1.** Ornith-1.0-35B-MoE (agentic coder, TB 43.1,
+3B-active MoE) implemented spec-04-part1 (mDNS discovery resolver) as the
+pi-workhorse worker: **11/11 exit criteria PASS, quality gate PASS**, committed
+`e4889e1`. This overturns the "no local model can be a workhorse" conclusion.
+
+**Why it worked (vs laguna/or-9B failures):**
+1. Genuinely agentic model (Ornith RL-trained to write code) — laguna (2.1B
+   reasoning) and or-9B never wrote.
+2. MoE 3B-active = fast on CPU.
+3. **131K context** server (`--ctx-size 131072`) — the implement prompt + read
+   results no longer overflow (previous 32K cap caused the 46K-token overflow).
+4. `--thinking off` — avoids reasoning-content burning the output budget.
+5. Correct 300s pi timeout (my earlier shell timeouts killed pi prematurely).
+
+**Servers:** laguna 131K (8084), ornith-35b-moe 131K (8085). Worker = ornith-35b-moe.
+**Memory keys:** local-workhorse-success, laguna-131k-context, local-model-test-timeout.
+**Next:** spec-04-part2 (cast-port wiring) and part3 (status surfacing).
