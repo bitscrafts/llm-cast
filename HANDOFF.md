@@ -1022,3 +1022,44 @@ detect/degrade, tmux detect/degrade, set_config validate-before-apply /
 apply-without-relaunch / relaunch-running-display, save/load profile roundtrip,
 unsafe-name rejection, mirror_session auto-detect argv, pipeline_status
 session+display blocks, tool router registers all 10.
+
+## 2026-08-18 — laguna worker on spec-04 (mDNS discovery): honest result
+
+**Status: YELLOW** — the improved pi-orchestration harness was exercised end-to-end
+with laguna (local) as worker + glm-5.2:cloud as planner. The harness fixes landed
+and worked; the laguna implementation did not land.
+
+**What was done:**
+- Reinstalled the updated pi-orchestration bundle (planner role, sdd-observe).
+- Configured planner=glm-5.2:cloud (ollama-cloud), worker=laguna-local.
+- Planner (glm-5.2:cloud) generated `specs/04-mdns-discovery.md` (task #28) via
+  `pi-plan.sh` — a detailed, code-grounded 13-exit-criteria spec.
+- Fixed two harness gaps exposed by the first laguna run:
+  - GAP2: pi-workhorse.sh now loads API keys from ~/.hermes/.env (do-not-clobber)
+    so it works in background/cron/daemon contexts.
+  - GAP1: stall detection is now tool-call-aware — a worker that made tool calls
+    but wrote no files yet is NOT escalated (falls through to gate+repair).
+- Re-dispatched laguna on spec-04.
+
+**Result:** 8/13 exit criteria passed, 5 failed. Laguna made 7 read tool calls
+(research) but never wrote a file. Root cause (from laguna server log): the
+implement prompt context ballooned to 22-23K tokens, dropping laguna to 3 tok/s
+and timing out. The 23KB spec + 18 tools exceeds laguna's effective working
+context.
+
+**Key finding:** laguna CAN do multi-step autonomy (proven in the corrected
+benchmark) but a real spec with a huge prompt is too big for its working context.
+Spec-splitting is justified for a NEW reason: local-model effective working
+context is small, so each part must be small enough that prompt + tool results
+stay within it. Smaller parts (5-7 criteria, fewer tools) would let laguna finish.
+
+**Next steps:**
+- Split spec-04 into smaller parts (or reduce the tool set) for laguna.
+- Consider pi context-management/compaction settings to trim accumulated tool
+  results.
+- The harness fixes (f2e8f47, 2dd17cf in pi-orchestration; synced 66f4c01) are
+  committed and are the durable win from this session.
+
+**Memory keys:** workspace/pi-orchestration/laguna-worker-gaps,
+workspace/pi-orchestration/laguna-worker-fixes,
+hermes-lnx-optimization/validation/laguna-real-spec
