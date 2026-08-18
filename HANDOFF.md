@@ -1188,3 +1188,24 @@ held (`DeviceAddr { host, port }`, `DiscoveredDevice { host, port, source }`,
   design — the binary is out of part-2's file list).
 - spec-04 part 3 (per the spec title "part 2/3") presumably covers the binary
   wiring + any mDNS-feature integration tests.
+
+## 2026-08-18 (cont.) — spec-04 mDNS discovery COMPLETE
+
+**GREEN.** All 13 master-spec exit criteria PASS, `cargo build --features mdns`
+and `--features cast,mdns` compile, full gate green.
+
+- **Part1** (resolver module, `e4889e1`): implemented by **ornith-35b-moe**
+  (local agentic workhorse), 11/11.
+- **Part2** (cast-port wiring + status surfacing, `41e1951`): escalated to
+  glm-5.2:cloud after ornith-moe stalled on existing-file wiring; review timed
+  out but gate passed. 10/10.
+- **Part3** (unfilled template): REDUNDANT — parts 1+2 covered R5 (cast-port)
+  + R6 (status block). Left as a template; the feature is done without it.
+
+**Key lesson:** ornith-35b-moe excels at greenfield new-module parts (wrote
+`discovery.rs` fully) but stalls wiring existing files; the harness escalation
+rescues it. The recipe for local-model success: agentic model + MoE + 131K ctx
++ `--thinking off` + real timeout.
+
+**Memory keys:** mdns-discovery-complete, local-workhorse-success,
+laguna-131k-context, local-model-test-timeout, ornith-also-read-only.
