@@ -2263,3 +2263,101 @@ async fn test_pipeline_status_session_and_display_blocks() {
     assert_eq!(status["display"]["margin"], 0.10);
     assert_eq!(status["display"]["geometry"], "116x32+0+0");
 }
+
+// ===========================================================================
+// spec-04 part 1 — mDNS discovery resolver (self-contained, no wiring).
+// A FakeResolver scripts results; no test enables `mdns` or touches the net.
+// ===========================================================================
+
+use cast_tv_terminal::cast::{
+    resolve_device, resolve_with, DeviceResolver, DiscoveredDevice, DiscoveryError,
+    DiscoverySource, StaticResolver,
+};
+
+/// A scripted resolver: returns a queued result.
+struct FakeResolver {
+    result: Mutex<Result<DiscoveredDevice, DiscoveryError>>,
+}
+
+impl FakeResolver {
+    fn ok(host: &str, port: u16, source: DiscoverySource) -> Self {
+        Self {
+            result: Mutex::new(Ok(DiscoveredDevice {
+                host: host.to_string(),
+                port,
+                source,
+            })),
+        }
+    }
+    fn err(e: DiscoveryError) -> Self {
+        Self {
+            result: Mutex::new(Err(e)),
+        }
+    }
+}
+
+impl DeviceResolver for FakeResolver {
+    fn resolve(&self) -> Result<DiscoveredDevice, DiscoveryError> {
+        self.result.lock().unwrap().clone()
+    }
+}
+
+/// R2 — StaticResolver returns the configured host at port 8009, source Config.
+#[test]
+fn test_static_resolver_returns_config() {
+    let r = StaticResolver::new("10.10.10.208");
+    let dev = r.resolve().unwrap();
+    assert_eq!(dev.host, "10.10.10.208");
+    assert_eq!(dev.port, 8009);
+    assert_eq!(dev.source, DiscoverySource::Config);
+
+    // The public re-export constructs the same shape.
+    let dev2 = StaticResolver {
+        host: "10.10.10.208".to_string(),
+    }
+    .resolve()
+    .unwrap();
+    assert_eq!(dev2, dev);
+}
+
+/// R1,R4 (ACCEPTANCE) — resolve_device catches an Err from the resolver, logs,
+/// and returns the StaticResolver result for the configured host: never Err,
+/// never panic, source Config.
+#[test]
+fn test_resolve_device_falls_back_on_err() {
+    let fake = FakeResolver::err(DiscoveryError::Timeout(5));
+    let dev = resolve_with(Box::new(fake), "10.10.10.208");
+    assert_eq!(dev.host, "10.10.10.208");
+    assert_eq!(dev.port, 8009);
+    assert_eq!(dev.source, DiscoverySource::Config);
+
+    // The total entrypoint also never errors on a quiet LAN: with the `mdns`
+    // feature off it goes straight to StaticResolver; with it on, any failure
+    // is caught. Either way the configured host comes back at 8009.
+    let dev2 = resolve_device("10.10.10.208");
+    assert_eq!(dev2.host, "10.10.10.208");
+    assert_eq!(dev2.port, 8009);
+    assert_eq!(dev2.source, DiscoverySource::Config);
+}
+
+/// R4 — resolve_device uses the resolver's result unchanged when it is Ok.
+#[test]
+fn test_resolve_device_uses_mdns_result() {
+    let fake = FakeResolver::ok("192.168.1.55", 8009, DiscoverySource::Mdns);
+    let dev = resolve_with(Box::new(fake), "10.10.10.208");
+    assert_eq!(dev.host, "192.168.1.55");
+    assert_eq!(dev.port, 8009);
+    assert_eq!(dev.source, DiscoverySource::Mdns);
+}
+
+/// R3 — MdnsResolver exists and exposes the documented fields when the feature
+/// is on. Compiled only under `--features mdns`; the gate keeps the default
+/// build mDNS-free (N2).
+#[cfg(feature = "mdns")]
+#[test]
+fn test_mdns_resolver_struct_exists() {
+    use cast_tv_terminal::cast::MdnsResolver;
+    let r = MdnsResolver::new("Living Room TV", 5);
+    assert_eq!(r.config_device, "Living Room TV");
+    assert_eq!(r.timeout_secs, 5);
+}

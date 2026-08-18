@@ -30,11 +30,15 @@ rust_cast = { version = "0.17", optional = true }
 # MCP server (spec-03). Pinned to the 3.x series; its rustix tree must coexist
 # with the spec-02 `std` pin (spec-03 G9: never remove the pin).
 rmcp = { version = "3", features = ["server", "macros", "transport-io", "schemars"] }
+# spec-04 part 1: pure-Rust mDNS discovery (no avahi/bonjour). Feature-gated so
+# the default build pulls no mDNS code; the dep is optional.
+mdns-sd = { version = "0.11", optional = true }
 
 [features]
 default = []
 gstreamer = ["dep:gstreamer", "dep:gstreamer-video", "dep:gstreamer-app"]
 cast = ["dep:rust_cast"]
+mdns = ["dep:mdns-sd"]
 
 [[test]]
 name = "cast_tv_tests"
