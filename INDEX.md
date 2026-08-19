@@ -1,0 +1,164 @@
+# cast-tv-terminal
+
+**Display a terminal multiplexer session on your TV via Chromecast.**
+
+`cast-tv-terminal` captures a live terminal pane (herdr/tmux `pipe-pane`),
+renders it to a video frame, encodes it to H.264, serves it as low-latency
+HLS, and casts it onto a Chromecast's Default Media Receiver. An MCP server
+exposes the whole thing as tools an AI agent can call.
+
+- **Crate**: `cast-tv-terminal` v0.1.0
+- **Language**: Rust (edition 2021)
+- **License**: (add before publishing)
+- **Repository**: (add GitHub URL before publishing)
+
+---
+
+## What it does
+
+```
+capture (pipe-pane) → emu (vte grid) → rasterize (RGBA) → encode (H.264/AAC)
+    → serve (HLS) → cast (rust_cast → Chromecast DMR)
+```
+
+A terminal multiplexer session (herdr or tmux) is piped into the app, parsed
+into a screen grid, rasterized to pixels, encoded with GStreamer, served as an
+HLS stream, and loaded onto a Chromecast. The result: **your terminal on the
+TV**, with real audio support.
+
+---
+
+## Binaries
+
+| Binary | Purpose |
+|--------|---------|
+| `mirror` | Run the whole cast path: `--source <pipe-pane> [--audio-source <fragment>] [--bind A:P] [--size WxH] [--outdir DIR] [--encoder x264\|vaapi] [--device IP] [--url-base URL] [--no-cast]` |
+| `castctl` | Operator smoke-test: `castctl [--ping] [--image] [--type CONTENT-TYPE] <device-ip> <url>` |
+| `mcp-server` | MCP-over-stdio server exposing the TV as agent tools |
+
+---
+
+## Features (Cargo)
+
+| Feature | Enables |
+|---------|---------|
+| *(default)* | Core pipeline + MCP server (no codec, no cast) |
+| `gstreamer` | Real H.264/AAC encoding via GStreamer |
+| `cast` | rust_cast device session (media load onto Chromecast) |
+| `mdns` | mDNS discovery of cast devices on the LAN |
+
+---
+
+## MCP Endpoints (mcp-server)
+
+The MCP server exposes the TV as tools an agent can call. All tools are always
+listed; feature-gated ones return a clear error when built without the
+feature (never crash).
+
+| Tool | Description | Feature |
+|------|-------------|---------|
+| `cast_url` | Cast a media URL (HLS playlist, MP4, or image) to the TV via the configured Chromecast | `cast` |
+| `cast_text` | Show agent text on the TV in the dedicated agent window | — |
+| `run_command` | Run a shell command verbatim in the agent window; its output appears on the TV | — |
+| `set_font_size` | Relaunch the display xterm with a new font size in points (6..=32) | — |
+| `pipeline_status` | Report the live TV pipeline state as one JSON text block | — |
+| `restore` | Restore the TV to the cycling view; restart the cycle loop unless disabled | — |
+| `mirror_session` | Mirror a running terminal session on the TV via the display xterm | — |
+| `set_config` | Change display settings (resolution/terminal/margin/geometry) at runtime | — |
+| `save_profile` | Save the current display settings as a named profile | — |
+| `load_profile` | Load a saved display profile and apply it (relaunches a running display) | — |
+
+---
+
+## Configuration (environment)
+
+All runtime config comes from the environment with documented defaults.
+
+| Env var | Default | Meaning |
+|---------|---------|---------|
+| `MUX` | `herdr` | Multiplexer: `herdr` or `tmux` |
+| `MUX_SESSION` | `tv-demo` | Multiplexer session name |
+| `MUX_SOCKET` | `$HOME/.config/herdr/sessions/tv-demo/herdr.sock` | herdr socket path |
+| `MUX_WORKSPACE` | `w1` | herdr workspace id |
+| `MUX_AGENT_LABEL` | `agent` | Window label the agent tools use |
+| `MUX_CYCLE_LABELS` | `1,watch` | Comma-separated tab labels shown by the cycle |
+| `MUX_FOCUS_SECS` | `10` | Seconds each tab is focused by the cycle |
+| `CAST_DEVICE` | `10.10.10.208` | Chromecast host or IP |
+| `HLS_DIR` | `/tmp/m2/xhls` | Directory of the HLS segments served to the TV |
+| `CYCLE_PID_FILE` | `/tmp/m2/tv_cycle.pid` | PID file of the running cycle loop |
+| `X_DISPLAY` | `:99` | Framebuffer display |
+| `XTERM_GEOMETRY` | *(computed)* | Legacy verbatim xterm geometry override |
+| `TV_RESOLUTION` | `1280x720` | Display frame the pipeline renders at (`WxH`) |
+| `TV_TERMINAL` | `116x34` | Logical display terminal size (`CxR`) |
+| `TV_MARGIN` | `0.10` | Symmetric inset fraction of each frame edge kept clear |
+| `PROFILES_DIR` | `$HOME/.config/chromecast-tv-mirror/profiles` | Where `save_profile`/`load_profile` read/write |
+
+---
+
+## Architecture
+
+```
+src/
+├── lib.rs            # module roots
+├── bin/
+│   ├── mirror.rs     # full cast path operator binary
+│   ├── castctl.rs    # device smoke-test binary
+│   └── mcp-server.rs # MCP-over-stdio server
+├── capture/          # R1: pipe-pane byte source + bridge
+├── emu/              # R2: vte terminal emulation → cell grid
+├── render/           # R3: grid → RGBA raster (font + damage)
+├── encode/           # R4: RGBA → H.264/AAC → HLS (GStreamer)
+├── serve/            # R5: low-latency HLS HTTP server (axum)
+├── cast/             # R6: rust_cast device session + mDNS discovery
+├── mux/              # herdr/tmux multiplexer control
+├── mcp/              # MCP server (tools, config, display, runner)
+├── pipeline/         # capture→emu→rasterize→encode coordinator
+└── damage.rs         # R7: changed-cell tracking
+```
+
+---
+
+## Quick start
+
+```bash
+# Build the full stack (needs GStreamer + system deps)
+cargo build --release --features cast,mdns,gstreamer
+
+# Run the MCP server (stdio)
+mcp-server
+
+# Cast a live terminal pane to the TV
+mirror --source <pipe-pane-file> \
+       --audio-source 'filesrc location=/tmp/song.mp3 ! decodebin ! audioconvert ! audioresample' \
+       --bind 0.0.0.0:8080 --outdir /tmp/hls \
+       --url-base http://<LAN-IP>:8080/live.m3u8 \
+       --device 10.10.10.208
+
+# Smoke-test a device
+castctl --ping 10.10.10.208
+```
+
+---
+
+## Development
+
+- **Spec-driven**: each feature is a numbered spec in `specs/` (01 master,
+  02 damage, 03 mcp-server, 04 mDNS, 05 castctl, 06 real audio).
+- **Workflow**: pi-orchestration — a planner (glm-5.2) authors specs, a local
+  workhorse (laguna) implements them in isolated git worktrees, the orchestrator
+  reviews and commits.
+- **Tests**: `cargo test` (unit + integration), `cargo clippy -- -D warnings`,
+  `cargo fmt -- --check`. GStreamer/cast tests are feature-gated.
+- **Verification**: `_tmp/audio_verify.sh` proves real audio lands in the HLS
+  output (in-container, no TV needed).
+
+---
+
+## Status
+
+- **spec-01** master pipeline (6 parts): ✅
+- **spec-02** damage tracker: ✅
+- **spec-03** MCP server (3 parts): ✅
+- **spec-04** mDNS discovery: ✅
+- **spec-05** castctl `--ping`: ✅
+- **spec-06** real audio (3 parts): ✅
