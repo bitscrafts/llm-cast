@@ -4,8 +4,8 @@
 
 `cast-tv-terminal` captures a live terminal pane (herdr/tmux `pipe-pane`),
 renders it to a video frame, encodes it to H.264, serves it as low-latency
-HLS, and casts it onto a Chromecast's Default Media Receiver. An MCP server
-exposes the whole thing as tools an AI agent can call.
+HLS, and casts it onto a **Google Chromecast** (Default Media Receiver). An
+MCP server exposes the whole thing as tools an AI agent can call.
 
 - **Crate**: `cast-tv-terminal` v0.1.0
 - **Language**: Rust (edition 2021)
