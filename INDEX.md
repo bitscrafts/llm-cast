@@ -140,6 +140,85 @@ castctl --ping 10.10.10.208
 
 ---
 
+## Setting up the MCP server
+
+The MCP server exposes the TV as tools an agent (Claude Code, Codex, Hermes,
+...) can call. It runs over **stdio** — the agent launches it as a subprocess
+and talks JSON-RPC over stdin/stdout.
+
+### 1. Build the server
+
+```bash
+cargo build --release --features cast,mdns,gstreamer
+cp target/release/mcp-server ~/.local/bin/mcp-server
+```
+
+### 2. Bring up the TV display stack
+
+The TV runs its own herdr session (`tv-demo`) with the project's herdr config.
+The display pipeline (Xvfb `:99`, ffmpeg x11grab→HLS, hls_server) must be
+running, then:
+
+```bash
+scripts/tv-demo-up.sh   # starts the tv-demo herdr server + display xterm + panes
+```
+
+### 3. Register the server with your agent
+
+The server is configured entirely via environment variables (see the config
+table above). A ready-made `.mcp.json` is in the repo root — point it at your
+installed binary and adjust `CAST_DEVICE`/`MUX_SESSION` to your setup.
+
+**Claude Code** — add to `~/.claude.json` (or the project's `.mcp.json`):
+
+```json
+{
+  "mcpServers": {
+    "chromecast": {
+      "type": "stdio",
+      "command": "/root/.local/bin/mcp-server",
+      "args": [],
+      "env": {
+        "CAST_DEVICE": "10.10.10.208",
+        "MUX": "herdr",
+        "MUX_SESSION": "tv-demo",
+        "MUX_SOCKET": "/root/.config/herdr/sessions/tv-demo/herdr.sock",
+        "TV_RESOLUTION": "1280x720",
+        "TV_TERMINAL": "165x50",
+        "TV_MARGIN": "0.05"
+      }
+    }
+  }
+}
+```
+
+**Codex** — add to `~/.codex/config.toml`:
+
+```toml
+[mcp_servers.chromecast]
+command = "/root/.local/bin/mcp-server"
+env = { CAST_DEVICE = "10.10.10.208", MUX = "herdr", MUX_SESSION = "tv-demo",
+        MUX_SOCKET = "/root/.config/herdr/sessions/tv-demo/herdr.sock",
+        TV_RESOLUTION = "1280x720", TV_TERMINAL = "165x50", TV_MARGIN = "0.05" }
+```
+
+**Hermes** — `hermes mcp add chromecast -- /root/.local/bin/mcp-server` (or
+edit `~/.hermes/config.yaml`).
+
+### 4. Use it
+
+Once registered, the agent sees the 10 tools. For example, in Claude Code or
+Codex, just ask:
+
+> "Mirror the `tv-demo` session on the TV" → calls `mirror_session`
+> "Show 'hello' on the TV" → calls `cast_text`
+> "Cast this HLS URL to the TV" → calls `cast_url`
+> "What's on the TV right now?" → calls `pipeline_status`
+
+The agent calls the tools automatically; you don't type JSON-RPC yourself.
+
+---
+
 ## Casting a terminal / following LLM activity
 
 The core use case: **put a live terminal on the TV and watch an LLM work in
