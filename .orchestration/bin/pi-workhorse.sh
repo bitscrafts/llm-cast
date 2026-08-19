@@ -22,6 +22,7 @@
 #
 # Usage:
 #   pi-workhorse.sh run       <spec> [root]         <-- START HERE
+#   pi-workhorse.sh run       --worktree <spec> [root]   # isolated git worktree
 #   pi-workhorse.sh implement <spec> [root] [model]
 #   pi-workhorse.sh repair    <spec> [root] [model]     # --escalate for the big model
 #   pi-workhorse.sh review    <spec> [root] [model]
@@ -288,6 +289,36 @@ FAIL if any requirement is unimplemented or any test was weakened."
     SELF="$HERE/pi-workhorse.sh"
     rounds="${ORCH_MAX_REPAIR_ROUNDS:-2}"
 
+    # ------------------------------------------------------------------
+    # Optional git-worktree isolation (ORCH_WORKTREE=1 or --worktree).
+    # The workhorse edits a throwaway branch checkout, so the main tree
+    # stays untouched and concurrent sessions cannot clobber each other's
+    # working-tree edits. Phases 2-6 run against the worktree; phase 7
+    # (orchestrator) reviews the branch diff and merges.
+    # ------------------------------------------------------------------
+    if [ "${ORCH_WORKTREE:-0}" = "1" ] || [ "${1:-}" = "--worktree" ]; then
+        if [ "${1:-}" = "--worktree" ]; then
+            SPEC="${2:-}"; [ -n "$SPEC" ] || die "spec path required"
+            ROOT="${3:-$(cd "$(dirname "$SPEC")/.." && pwd)}"
+        fi
+        if ! git -C "$ROOT" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+            echo "pi-workhorse: ORCH_WORKTREE=1 but $ROOT is not a git repo — falling back to in-tree run" >&2
+        else
+            WT_SLUG="$(basename "$SPEC" .md)"
+            WT_TS="$(date +%s)"
+            WT_BRANCH="wt/${WT_SLUG}-${WT_TS}"
+            WT_DIR="$ROOT/_tmp/worktrees/${WT_SLUG}-${WT_TS}"
+            echo "== worktree isolation: $WT_BRANCH @ $WT_DIR =="
+            git -C "$ROOT" worktree add -b "$WT_BRANCH" "$WT_DIR" HEAD >/dev/null 2>&1 \
+                || die "failed to create worktree $WT_DIR"
+            # Redirect ROOT/SPEC into the worktree for the whole run.
+            WT_MAIN="$ROOT"   # the main repo (for phase-7 merge/cleanup)
+            ROOT="$WT_DIR"
+            SPEC="$WT_DIR/specs/$(basename "$SPEC")"
+            [ -f "$SPEC" ] || { echo "pi-workhorse: spec not present in worktree: $SPEC" >&2; exit 2; }
+        fi
+    fi
+
     # Isolate this run's usage numbers from earlier runs of the same spec:
     # baseline whatever sessions already exist, so each phase's usage line is
     # that phase's own cost and the task total is this run's, not lifetime.
@@ -422,7 +453,14 @@ FAIL if any requirement is unimplemented or any test was weakened."
     echo
     echo "PHASES 2-6 COMPLETE. Phase 7 is yours:"
     echo "  read the load-bearing diff, confirm the architecture, then commit."
-    echo "  git -C $ROOT diff --stat"
+    if [ -n "${WT_BRANCH:-}" ]; then
+        echo "  WORKTREE: changes are on branch '$WT_BRANCH' in $WT_DIR"
+        echo "  Review:   git -C $WT_DIR diff --stat"
+        echo "  Merge:    git -C ${WT_MAIN:-$ROOT} merge --ff-only $WT_BRANCH   (from the main repo)"
+        echo "  Cleanup:  git -C ${WT_MAIN:-$ROOT} worktree remove $WT_DIR && git -C ${WT_MAIN:-$ROOT} branch -D $WT_BRANCH"
+    else
+        echo "  git -C $ROOT diff --stat"
+    fi
     ;;
 
   gate)     run_gate "${1:-.}" ;;
