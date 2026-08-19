@@ -1,11 +1,93 @@
 # HANDOFF — chromecast-tv-mirror
 
-**Status**: GREEN — **spec-06 part 1 (AudioSource seam + silent default) LANDED** (2026-08-19):
-`build_pipeline` + `GstEncoder::new` accept `audio: Option<&str>`; `None`
-preserves the silent-AAC DMR default (byte-identical), `Some(frag)` feeds a
-real source; R2/R3/R5 tests pass under `--features gstreamer`; gate exit 0.
+**Status**: GREEN — **spec-06 part 2 (mirror --audio-source CLI wiring) LANDED** (2026-08-19):
+`mirror` accepts `--audio-source <fragment>` (missing value → exit 2), forwards
+`audio_source.as_deref()` to `GstEncoder::new` (silent default `None` preserved),
+and is accept-but-inert on NullEncoder. R1/R3/R4 tests pass; gate exit 0.
 
-Prior: spec-05 (castctl --ping) LANDED (2026-08-18). See below.
+Prior: spec-06 part 1 (AudioSource seam) LANDED (2026-08-19). See below.
+
+---
+
+## 2026-08-19 — SPEC-06 PART 2 LANDED: mirror --audio-source CLI wiring
+
+### What was DONE this session
+- **Tests first**: the part-2 TDD contract tests already existed in
+  `tests/cast_tv_tests.rs` (lines ~958-1075, added by a prior agent):
+  `test_mirror_accepts_audio_source_flag` (R1), `test_mirror_missing_audio_value_errors`
+  (R1), `test_mirror_no_audio_passes_none` (R3), `test_mirror_audio_inert_no_gstreamer`
+  (R4). They were red because the `mirror` parse loop had no `--audio-source` arm
+  (only the `--help` text mentioned it). I confirmed red, then added production code.
+- **Production code** (`src/bin/mirror.rs` only — G7 respected):
+  - Added `let mut audio_source: Option<String> = None;` to the arg state.
+  - Added a `--audio-source` parse arm: pulls the next arg; if the next token
+    starts with `--` (i.e. is itself a flag, e.g. `--no-cast`) OR is missing,
+    it errors with `mirror: --audio-source needs a value` and exits 2 (R1,
+    consistent with `--bind`/`--size`/`--encoder`). Otherwise stores the value.
+    This guard prevents a bare `--audio-source` from silently swallowing the
+    following flag as the fragment.
+  - Forwarded `audio_source.as_deref()` to `GstEncoder::new(...)` in the
+    `gstreamer`-feature branch (R2). `None` → silent AAC default (R3, part 1).
+  - In the `not(feature = "gstreamer")` (NullEncoder) branch, referenced
+    `audio_source` via `let _ = &audio_source;` so the parsed value is
+    accepted-but-inert (R4) and not dead-code-clippy'd.
+  - `--help` already listed `--audio-source` (part-1 added the line); kept.
+- **Guardrails kept**: no spec edits (G1); no commit (G2); no test weakened
+  (G3); no `_tmp/` absolute paths (G4); no `rm -rf` (G5); only `src/bin/mirror.rs`
+  touched in `src/` (G7 — no `src/encode/pipe.rs` or other module edits).
+
+### Outcome — gate
+- `/projects/chromecast-tv-mirror/.orchestration/lib/quality-gate.sh
+  /projects/wt-06-real-audio-part2-1787125544` → exit 0.
+- Stages:
+  - `cargo fmt --check            PASS`
+  - `cargo check                  PASS`
+  - `cargo clippy -D warnings     PASS`
+  - `cargo test                   PASS`
+- `QUALITY GATE: PASSED (rust)`
+
+### Spec exit criteria — all 5 verified individually (raw)
+- c1 `cargo test 2>&1 | grep -qE "^test result: ok\. [1-9]"` → PASS. Raw lines:
+  - `test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 3.00s`
+  - `test result: ok. 38 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.49s`
+  - `test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 3.00s`
+  - `test result: ok. 41 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s`
+- c2 `cargo test --features gstreamer test_mirror_accepts_audio_source_flag` →
+  `test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 40 filtered out` (R1 acceptance).
+- c3 `cargo clippy -- -D warnings` → clean (PASS).
+- c4 `cargo run --bin mirror -- --help 2>&1 | grep -- "--audio-source"` → matches:
+  `              [--encoder x264|vaapi] [--device IP] [--url-base URL] [--audio-source <fragment>] [--no-cast]`
+  and `  --audio-source <fragment>  GStreamer audio launch fragment (gstreamer feature only)`.
+- c5 `git diff --quiet -- specs/` → SPECS-UNCHANGED (exit 0).
+
+### Prose criteria
+1. Raw `--help` excerpt (contains `--audio-source`):
+   ```
+   usage: mirror --source <file> [--bind A:P] [--size WxH] [--outdir DIR]
+                 [--encoder x264|vaapi] [--device IP] [--url-base URL] [--audio-source <fragment>] [--no-cast]
+     ...
+     --audio-source <fragment>  GStreamer audio launch fragment (gstreamer feature only)
+   ```
+2. The parse arm (in `src/bin/mirror.rs`) and the `audio_source.as_deref()`
+   forward to `GstEncoder::new` are both present (diff in `src/bin/mirror.rs`).
+
+### Files changed
+- `src/bin/mirror.rs` — added `audio_source` state, the `--audio-source` parse
+  arm (missing/flag value → exit 2), `audio_source.as_deref()` forwarded to
+  `GstEncoder::new`, and an inert `let _ = &audio_source;` in the NullEncoder
+  branch.
+- `tests/cast_tv_tests.rs` — only `cargo fmt` reformatting of the pre-existing
+  part-2 test block (no semantic change; the tests were already in the file).
+
+### Spec notes / defects
+- None. Spec premises verified accurate: the parse loop matched the documented
+  lines, the `GstEncoder::new` call site accepted the new `audio` param from
+  part 1, and the `--help` text already advertised the flag. No spec edits.
+
+### Next steps
+- spec-06 part 3 (if any): E2E on a real device with a real audio source
+  (operator step — `mirror --audio-source 'filesrc location=...' ...`).
+- Commit when reviewed (workhorse did not commit per G2).
 
 ---
 

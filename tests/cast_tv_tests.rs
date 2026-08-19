@@ -954,3 +954,135 @@ fn test_dir_store_reads_output_dir() {
 
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+// ===========================================================================
+// spec-06 part 2: mirror CLI --audio-source flag (R1-R4)
+// ===========================================================================
+
+/// R1 (acceptance) — `mirror --help` output must contain `--audio-source`.
+#[test]
+fn test_mirror_accepts_audio_source_flag() {
+    let output = std::process::Command::new("cargo")
+        .args(["run", "--bin", "mirror", "--", "--help"])
+        .output()
+        .expect("failed to execute mirror --help");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("--audio-source"),
+        "--help must show --audio-source flag, got:\n{}",
+        stdout
+    );
+}
+
+/// R1 — `mirror --source x --audio-source` (missing value) must exit with code 2.
+#[test]
+fn test_mirror_missing_audio_value_errors() {
+    // Create a fake source file for the --source arg
+    let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let dir = manifest.join("_tmp/test-mirror-missing-audio");
+    std::fs::create_dir_all(&dir).unwrap();
+    let source_path = dir.join("pane.out");
+    std::fs::write(&source_path, b"test").unwrap();
+
+    let result = std::process::Command::new("cargo")
+        .args([
+            "run",
+            "--bin",
+            "mirror",
+            "--",
+            "--source",
+            source_path.to_str().unwrap(),
+            "--audio-source",
+            "--no-cast",
+        ])
+        .output()
+        .expect("failed to execute mirror");
+
+    let _ = std::fs::remove_dir_all(&dir);
+
+    assert_eq!(
+        result.status.code(),
+        Some(2),
+        "missing --audio-source value must exit with code 2"
+    );
+}
+
+/// R3 — with no `--audio-source`, encoder receives `audio=None` (silent default).
+/// We verify by checking the help shows the flag but default behavior is silent.
+#[test]
+fn test_mirror_no_audio_passes_none() {
+    // This test verifies that when --audio-source is NOT provided,
+    // the mirror binary accepts it and passes None (silent AAC) to encoder.
+    // The actual None->silent AAC is verified via the audio_tests module.
+    // Here we just ensure the binary runs and parses args correctly.
+    let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let dir = manifest.join("_tmp/test-mirror-no-audio");
+    std::fs::create_dir_all(&dir).unwrap();
+    let source_path = dir.join("pane.out");
+    std::fs::write(&source_path, b"test").unwrap();
+
+    let result = std::process::Command::new("cargo")
+        .args([
+            "run",
+            "--bin",
+            "mirror",
+            "--",
+            "--source",
+            source_path.to_str().unwrap(),
+            "--no-cast",
+        ])
+        .env("MIRROR_DRY_RUN", "1") // avoid actual serving
+        .output()
+        .expect("failed to execute mirror");
+
+    let _ = std::fs::remove_dir_all(&dir);
+
+    // The binary should parse args and proceed (may fail for other reasons
+    // like missing encoder setup, but should NOT fail arg parsing)
+    assert!(
+        !String::from_utf8_lossy(&result.stderr).contains("unknown argument: --audio-source")
+            && !String::from_utf8_lossy(&result.stderr).contains("--audio-source is required"),
+        "missing --audio-source should not cause arg error, stderr: {}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+}
+
+/// R4 — default-features build (NullEncoder): `--audio-source` is parsed but ignored.
+#[test]
+fn test_mirror_audio_inert_no_gstreamer() {
+    // This test verifies that with default features (no gstreamer), the
+    // --audio-source flag is accepted without panic or crash.
+    let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let dir = manifest.join("_tmp/test-mirror-audio-inert");
+    std::fs::create_dir_all(&dir).unwrap();
+    let source_path = dir.join("pane.out");
+    std::fs::write(&source_path, b"test").unwrap();
+
+    let result = std::process::Command::new("cargo")
+        .args([
+            "run",
+            "--bin",
+            "mirror",
+            "--",
+            "--source",
+            source_path.to_str().unwrap(),
+            "--audio-source",
+            "filesrc location=/tmp/a.wav",
+            "--no-cast",
+        ])
+        .env("MIRROR_DRY_RUN", "1") // avoid actual serving
+        .output()
+        .expect("failed to execute mirror");
+
+    let _ = std::fs::remove_dir_all(&dir);
+
+    // Should not panic on the flag parsing; the flag is accepted and ignored
+    // by NullEncoder. The process may fail later (no GStreamer), but must
+    // accept the argument.
+    let stderr = String::from_utf8_lossy(&result.stderr);
+    assert!(
+        !stderr.contains("unknown argument: --audio-source"),
+        "--audio-source should be recognized, stderr: {}",
+        stderr
+    );
+}

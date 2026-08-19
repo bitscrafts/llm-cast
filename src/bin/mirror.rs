@@ -48,7 +48,7 @@ const FPS: u32 = 10;
 
 fn print_usage() {
     println!("usage: mirror --source <file> [--bind A:P] [--size WxH] [--outdir DIR]");
-    println!("              [--encoder x264|vaapi] [--device IP] [--url-base URL] [--no-cast]");
+    println!("              [--encoder x264|vaapi] [--device IP] [--url-base URL] [--audio-source <fragment>] [--no-cast]");
     println!();
     println!("  --source <file>   tmux/herdr pipe-pane output file (required)");
     println!("  --bind A:P        HTTP listen address (default {DEFAULT_BIND})");
@@ -57,6 +57,9 @@ fn print_usage() {
     println!("  --encoder ENC     x264 (default) or vaapi (gstreamer feature only)");
     println!("  --device IP       Chromecast to load the stream onto (cast feature)");
     println!("  --url-base URL    public stream URL, e.g. http://<LAN-IP>:8080/live.m3u8");
+    println!(
+        "  --audio-source <fragment>  GStreamer audio launch fragment (gstreamer feature only)"
+    );
     println!("  --no-cast         skip the cast leg entirely");
 }
 
@@ -79,6 +82,10 @@ fn main() -> ExitCode {
     let mut device: Option<String> = None;
     let mut url_base: Option<String> = None;
     let mut no_cast = false;
+    // spec-06 part 2: --audio-source <fragment>. Free-form GStreamer launch
+    // fragment forwarded to the encoder seam (part 1). None → silent AAC.
+    // On a default-features build (NullEncoder) the flag is accepted-but-inert.
+    let mut audio_source: Option<String> = None;
 
     let mut iter = args.iter().skip(1);
     while let Some(arg) = iter.next() {
@@ -130,6 +137,20 @@ fn main() -> ExitCode {
             }
             "--device" => device = iter.next().map(|s| s.to_string()),
             "--url-base" => url_base = iter.next().map(|s| s.to_string()),
+            "--audio-source" => {
+                // R1: missing value → usage error (exit 2), consistent with
+                // --source/--bind/--size. `--no-cast` after a bare
+                // `--audio-source` is NOT consumed as the fragment: an
+                // argument starting with `--` is treated as a missing value
+                // so operators don't silently swallow the next flag.
+                let next = iter.next();
+                let is_flag = next.as_ref().is_some_and(|s| s.starts_with("--"));
+                let Some(value) = next.filter(|_| !is_flag) else {
+                    eprintln!("mirror: --audio-source needs a value");
+                    return ExitCode::from(2);
+                };
+                audio_source = Some(value.to_string());
+            }
             "--no-cast" => no_cast = true,
             other => {
                 eprintln!("mirror: unknown argument: {other}");
@@ -223,10 +244,9 @@ fn main() -> ExitCode {
             &outdir,
             &root,
             url.clone(),
-            // spec-06 part 1: audio seam forwarded to build_pipeline; None
-            // preserves the silent-AAC default (R2/N1). The CLI flag that
-            // supplies a real source is part 2.
-            None,
+            // spec-06 part 2: forward the operator-supplied audio launch
+            // fragment to the encoder seam (part 1). None → silent AAC.
+            audio_source.as_deref(),
         ) {
             Ok(gst) => gst,
             Err(e) => {
@@ -247,6 +267,10 @@ fn main() -> ExitCode {
 
     #[cfg(not(feature = "gstreamer"))]
     let mut pipeline = {
+        // R4: --audio-source is accepted-but-inert on a default-features
+        // build (NullEncoder has no GStreamer audio leg). Reference it so
+        // the parsed value isn't dead code; it is intentionally unused here.
+        let _ = &audio_source;
         let _ = (&outdir, &encoder);
         Pipeline::new(
             bridge,
