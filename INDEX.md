@@ -10,7 +10,7 @@ exposes the whole thing as tools an AI agent can call.
 - **Crate**: `cast-tv-terminal` v0.1.0
 - **Language**: Rust (edition 2021)
 - **License**: (add before publishing)
-- **Repository**: (add GitHub URL before publishing)
+- **Repository**: `llm-cast` (GitHub, bitscrafts)
 
 ---
 
@@ -137,6 +137,58 @@ mirror --source <pipe-pane-file> \
 # Smoke-test a device
 castctl --ping 10.10.10.208
 ```
+
+---
+
+## Casting a terminal / following LLM activity
+
+The core use case: **put a live terminal on the TV and watch an LLM work in
+real time.** You mirror a herdr/tmux session (e.g. the one running an agent),
+and the TV shows its output as it happens.
+
+### The two paths
+
+**1. `mirror_session` (MCP tool) — the display xterm path.**
+`mirror_session <session>` kills the display xterm and respawns it attached to
+the given herdr/tmux session, sized to the effective display settings. The
+xterm runs on the framebuffer display (`X_DISPLAY`, default `:99`); the
+pipeline captures that frame, encodes it, and casts it. This is the
+"watch a live session" path — the agent's terminal appears on the TV.
+
+**2. `mirror` (binary) — the pipe-pane path.**
+`mirror --source <pipe-pane-file>` reads a herdr/tmux `pipe-pane` output file
+directly (no xterm), renders it, and casts it. This is the "stream a specific
+pane" path.
+
+### The delay: ~1–2 seconds
+
+The pipeline is **not** real-time video; it's a low-latency HLS stream, and
+the end-to-end delay is **roughly 1–2 seconds**. The contributors:
+
+| Stage | Cost |
+|-------|------|
+| Capture poll (`tick_ms=10`) | ~10 ms |
+| Rasterize + encode (10 fps, `FPS=10`) | ~100 ms/frame |
+| HLS segment (`target-duration=1`) | up to 1 s |
+| Chromecast fetch + buffer + play | ~0.5–1 s |
+
+So when an LLM prints a line, it appears on the TV **about 1–2 seconds later**.
+This is fine for *watching* an agent work (you see the output as it streams),
+but it is **not** suitable for interactive typing or anything needing
+sub-second feedback. The trade-off is inherent to HLS + Chromecast: the DMR
+buffers a segment before playing, which is what makes the stream reliable.
+
+### Following an LLM session
+
+1. Start your agent in a herdr/tmux session (e.g. `tv-demo`).
+2. Call `mirror_session` with that session name — the TV shows the agent's
+   terminal.
+3. Watch the output stream in ~1–2 s. Use `set_font_size` to adjust legibility,
+   `set_config` to change resolution/terminal size, and `restore` to return to
+   the cycling view when done.
+
+The `pipeline_status` tool reports the live pipeline state (device, session,
+frame size) as JSON, so you can confirm what's on the TV.
 
 ---
 
