@@ -99,12 +99,17 @@ then implement the `Option` gate and paste both outputs.
 
 ## Exit Criteria
 
-- [ ] `cd /projects/chromecast-tv-mirror && cargo test 2>&1 | grep -qE "^test result: ok\. [1-9]"` — suite passes
-- [ ] `cd /projects/chromecast-tv-mirror && cargo test --features gstreamer test_default_pipeline_has_silent_audio 2>&1 | grep -qE "^test result: ok\. [1-9]"` — the silent-default acceptance test passes under the gstreamer feature (R2)
-- [ ] `cd /projects/chromecast-tv-mirror && cargo test --features gstreamer test_pipeline_with_audio_source 2>&1 | grep -qE "^test result: ok\. [1-9]"` — R3
-- [ ] `cd /projects/chromecast-tv-mirror && cargo test --features gstreamer test_bad_audio_source_errors 2>&1 | grep -qE "^test result: ok\. [1-9]"` — R5
-- [ ] `cd /projects/chromecast-tv-mirror && cargo clippy -- -D warnings` — clean
-- [ ] `cd /projects/chromecast-tv-mirror && git diff --quiet -- specs/` — no spec edits (G1)
+The validator runs each command from the project root it was given (`cd $ROOT`
+already happens inside validate-exit-criteria.sh). **Do NOT hardcode `cd
+/projects/...` in a criterion** — in worktree mode that snaps back to the main
+repo which lacks the changes. Use cwd-relative commands.
+
+- [ ] `cargo test 2>&1 | grep -qE "^test result: ok\. [1-9]"` — suite passes
+- [ ] `cargo test --features gstreamer test_default_pipeline_has_silent_audio 2>&1 | grep -qE "^test result: ok\. [1-9]"` — the silent-default acceptance test passes under the gstreamer feature (R2)
+- [ ] `cargo test --features gstreamer test_pipeline_with_audio_source 2>&1 | grep -qE "^test result: ok\. [1-9]"` — R3
+- [ ] `cargo test --features gstreamer test_bad_audio_source_errors 2>&1 | grep -qE "^test result: ok\. [1-9]"` — R5
+- [ ] `cargo clippy -- -D warnings` — clean
+- [ ] `git diff --quiet -- specs/` — no spec edits (G1)
 
 **Prose criteria**:
 
