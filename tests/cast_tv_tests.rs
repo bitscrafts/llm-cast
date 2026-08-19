@@ -791,6 +791,109 @@ fn sample_pipeline() -> Pipeline<FakeByteSource, NullEncoder> {
     )
 }
 
+// ===========================================================================
+// spec-06 part 1: AudioSource seam + silent default (R1-R5)
+// ===========================================================================
+
+#[cfg(feature = "gstreamer")]
+mod audio_tests {
+    use super::*;
+    use cast_tv_terminal::encode::pipe::{build_launch_string, build_pipeline, EncodeError};
+    use std::path::PathBuf;
+
+    /// Project-relative scratch dir under `_tmp/` (G4: no hardcoded absolute
+    /// paths, no `/tmp`). Unique per process to avoid clashes.
+    fn audio_scratch() -> PathBuf {
+        let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        let dir = manifest.join(format!("_tmp/test-audio-{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+        dir
+    }
+
+    /// R2 (acceptance) — `None` produces the silent AAC default. The launch
+    /// string MUST contain `audiotestsrc` and `wave=silence`; a plausible
+    /// implementation that replaces the silent leg unconditionally fails here
+    /// (the DMR mandate, pinned).
+    #[test]
+    fn test_default_pipeline_has_silent_audio() {
+        let outdir = audio_scratch();
+        let launch = build_launch_string(
+            "x264",
+            80,
+            24,
+            30,
+            outdir.to_str().unwrap(),
+            "http://localhost:8080",
+            None,
+        );
+
+        assert!(
+            launch.contains("audiotestsrc"),
+            "launch string must contain audiotestsrc: {launch}"
+        );
+        assert!(
+            launch.contains("wave=silence"),
+            "launch string must contain wave=silence: {launch}"
+        );
+    }
+
+    /// R3 — `Some(frag)` replaces the audio source with the fragment: the
+    /// launch string contains the fragment and does NOT contain
+    /// `audiotestsrc`.
+    #[test]
+    fn test_pipeline_with_audio_source() {
+        let outdir = audio_scratch();
+        // A representative real-audio launch fragment (filesrc → decodebin).
+        // The fragment text itself uses an absolute path the operator would
+        // supply; that is the *fragment under test*, not a test artefact, so
+        // G4 (artefacts under `_tmp/`) does not apply to it.
+        let audio_frag = "filesrc location=/tmp/a.wav ! decodebin ! audioconvert ! audioresample";
+        let launch = build_launch_string(
+            "x264",
+            80,
+            24,
+            30,
+            outdir.to_str().unwrap(),
+            "http://localhost:8080",
+            Some(audio_frag),
+        );
+
+        assert!(
+            launch.contains("filesrc location=/tmp/a.wav"),
+            "launch string must contain the audio fragment: {launch}"
+        );
+        assert!(
+            !launch.contains("audiotestsrc"),
+            "launch string must NOT contain audiotestsrc when an audio source is provided: {launch}"
+        );
+    }
+
+    /// R1/R5 — a malformed audio fragment surfaces as `EncodeError::Gst` (no
+    /// panic) when the pipeline fails to build. `build_pipeline` runs the real
+    /// `parse::launch`, which rejects a garbage fragment.
+    #[test]
+    fn test_bad_audio_source_errors() {
+        let outdir = audio_scratch();
+        let result = build_pipeline(
+            "x264",
+            80,
+            24,
+            30,
+            outdir.to_str().unwrap(),
+            "http://localhost:8080",
+            Some("!!!invalid gstreamer fragment!!!"),
+        );
+
+        let err = match result {
+            Err(EncodeError::Gst(_)) => return,
+            Err(other) => panic!("expected EncodeError::Gst, got {other:?}"),
+            Ok(_) => panic!("bad audio fragment should return Err, not Ok"),
+        };
+        #[allow(unreachable_code)]
+        let _ = err;
+    }
+}
+
 /// P3 — a changed frame (new bytes through the bridge) is submitted, and
 /// the encoder saw the emu grid size × 8 canvas (3×2 grid → 24×16).
 #[test]

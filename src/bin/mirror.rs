@@ -223,6 +223,10 @@ fn main() -> ExitCode {
             &outdir,
             &root,
             url.clone(),
+            // spec-06 part 1: audio seam forwarded to build_pipeline; None
+            // preserves the silent-AAC default (R2/N1). The CLI flag that
+            // supplies a real source is part 2.
+            None,
         ) {
             Ok(gst) => gst,
             Err(e) => {
