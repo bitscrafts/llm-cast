@@ -1,11 +1,103 @@
 # HANDOFF — chromecast-tv-mirror
 
-**Status**: GREEN — **spec-06 part 2 (mirror --audio-source CLI wiring) LANDED** (2026-08-19):
-`mirror` accepts `--audio-source <fragment>` (missing value → exit 2), forwards
-`audio_source.as_deref()` to `GstEncoder::new` (silent default `None` preserved),
-and is accept-but-inert on NullEncoder. R1/R3/R4 tests pass; gate exit 0.
+**Status**: GREEN — **spec-06 part 3 (E2E real-audio HLS verification) LANDED** (2026-08-19):
+the operator-facing proof that real audio survives into the muxed HLS stream.
+`_tmp/audio_verify.sh` generates a real 440Hz WAV, runs a real GStreamer pipeline
+(`filesrc → wavparse → voaacenc → hlssink2`) muxing it into TS segments, and
+probes the output with `ffmpeg` to confirm an audio stream is present (R1). It
+then runs the same pipeline with `audiotestsrc wave=silence` (the silent
+default) and confirms the AAC track is still there (R2). Both PASS, exit 0.
 
-Prior: spec-06 part 1 (AudioSource seam) LANDED (2026-08-19). See below.
+Prior: spec-06 part 2 (mirror --audio-source CLI wiring) LANDED (2026-08-19).
+
+---
+
+## 2026-08-19 — SPEC-06 PART 3 LANDED: E2E real-audio HLS verification
+
+### What was DONE this session
+- **Tests first (per spec TDD contract)**: the part-3 "tests" ARE the
+  verification script `_tmp/audio_verify.sh` (R3 mandates a script-based
+  verification under `_tmp/`, NOT a Rust unit test — N3: "does NOT touch
+  `src/` — verification is script-based, under `_tmp/`"). Wrote the script
+  first, confirmed it red (the pre-existing stub script FAILED with
+  `FAILURE: No audio stream in HLS output`, exit 1), then fixed the script.
+- **Root cause of the stub's failure**: the pre-existing `_tmp/audio_verify.sh`
+  used `set -o pipefail` AND `if ffmpeg -i "$SEG" 2>&1 | grep -qi "audio"`.
+  `ffmpeg -i` with no output file exits non-zero ("At least one output file
+  must be specified") even on a successful probe; under `pipefail` that
+  non-zero status propagates as the pipeline's status and makes the `if`
+  false even though `grep` matched. Fix: probe into a file (no pipe) and grep
+  the file separately (`probe_has_audio`). Also the old pipeline had an
+  unused `tee name=t` and produced only silent-WAV segments.
+- **Production code** (`_tmp/audio_verify.sh` only — G7: no `src/` changes):
+  - Generates a real 2s 440Hz mono 8kHz WAV via Python `wave` (a tone, not
+    silence, so real samples flow through the encoder — proves audio lands).
+  - R1 branch: `filesrc location=$WAV ! wavparse ! audioconvert ! audioresample
+    ! voaacenc bitrate=64000 ! aacparse ! hls.audio` into `hlssink2`.
+  - R2 branch: `audiotestsrc wave=silence num-buffers=200 ! audioconvert
+    ! audioresample ! voaacenc bitrate=64000 ! aacparse ! hls.audio` (the
+    silent default AAC track — DMR mandate preserved).
+  - Probes the first TS segment with `ffmpeg -i <seg> -f null` (stderr → file),
+    then `grep -qi "audio"` on the probe file. Prints the matched `Audio:` line.
+  - `gst-launch-1.0 -e` (EOS on shutdown) so segments flush cleanly.
+  - Guardrail G4: workdir defaults to `_tmp/audio_verify_work` resolved from
+    the script's own location (`SCRIPT_DIR`), no hardcoded `/projects/...`.
+- **Guardrails kept**: no spec edits (G1); no commit (G2); no test weakened
+  (G3); no hardcoded absolute paths (G4); no `rm -rf` of run state — only the
+  per-run `hls_*` work dirs are wiped and regenerated (G5); `src/` untouched
+  (G7); raw output reported (G6).
+
+### Outcome — gate
+- `/projects/chromecast-tv-mirror/.orchestration/lib/quality-gate.sh
+  /projects/wt-06-real-audio-part3-1787130360` → exit 0.
+- Stages:
+  - `cargo fmt --check            PASS`
+  - `cargo check                  PASS`
+  - `cargo clippy -D warnings     PASS`
+  - `cargo test                   PASS`
+- `QUALITY GATE: PASSED (rust)`
+
+### Spec exit criteria — all 4 verified individually (raw)
+- c1 `test -x _tmp/audio_verify.sh && bash _tmp/audio_verify.sh 2>&1 | grep -qi "audio"` → PASS.
+  Raw match line: `Stream #0:1[0x42]: Audio: aac (LC) ..., 8000 Hz, mono, fltp, 11 kb/s`
+  (R1 real WAV source) and `Stream #0:1[0x42]: Audio: aac (LC) ..., 44100 Hz, mono, fltp, 66 kb/s`
+  (R2 silent default).
+- c2 `test -f _tmp/audio_verify.sh` → PASS.
+- c3 `git diff --quiet -- src/` → PASS (clean; no src/ changes — G7).
+- c4 `git diff --quiet -- specs/` → PASS (clean; no spec edits — G1).
+
+### Prose criteria
+1. Raw `ffmpeg` probe of a real segment (R1), showing the audio stream:
+   ```
+   Input #0, mpegts, from '.../hls_with_audio/segment/seg_00000.ts':
+     Stream #0:0[0x41]: Video: h264 (High 4:4:4 Predictive) ..., 320x240, 10 fps
+     Stream #0:1[0x42]: Audio: aac (LC) ([15][0][0][0] / 0x000F), 8000 Hz, mono, fltp, 11 kb/s
+   ```
+   R2 (silent default):
+   ```
+     Stream #0:1[0x42]: Audio: aac (LC) ([15][0][0][0] / 0x000F), 44100 Hz, mono, fltp, 66 kb/s
+   ```
+2. `_tmp/audio_verify.sh` is committed-ready: no hardcoded absolute paths
+   beyond the script's own `_tmp/` location (G4); workdir is derived from
+   `BASH_SOURCE`.
+
+### Key files modified (part 3)
+- `_tmp/audio_verify.sh` — complete rewrite (was a broken stub; now a working
+  R1/R2 verification). This is the ONLY file changed for part 3.
+
+### Next steps
+- spec-06 (real audio) is now fully landed across all 3 parts (seam, CLI, E2E).
+  No further spec-06 work expected unless an operator reports a real-device
+  regression (this verification is in-container; a TV is not required per N1).
+- If a follow-up is wanted: run `_tmp/audio_verify.sh` against the actual
+  `mirror` binary (via `cargo run --bin mirror -- --audio-source '<frag>'`)
+  instead of the standalone `gst-launch` pipeline, to verify the full app
+  stack end-to-end. That would need a feature-gated test and is out of scope
+  for part 3 (which N3 explicitly restricts to script-based verification).
+
+---
+
+## 2026-08-19 — SPEC-06 PART 2 LANDED: mirror --audio-source CLI wiring (prior)
 
 ---
 
