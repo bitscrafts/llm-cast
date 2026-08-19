@@ -96,11 +96,16 @@ accept-but-inert behavior on NullEncoder. The flag must appear in `--help`.
 
 ## Exit Criteria
 
-- [ ] `cd /projects/chromecast-tv-mirror && cargo test 2>&1 | grep -qE "^test result: ok\. [1-9]"` — suite passes
-- [ ] `cd /projects/chromecast-tv-mirror && cargo test --features gstreamer test_mirror_accepts_audio_source_flag 2>&1 | grep -qE "^test result: ok\. [1-9]"` — R1 acceptance
-- [ ] `cd /projects/chromecast-tv-mirror && cargo clippy -- -D warnings` — clean
-- [ ] `cd /projects/chromecast-tv-mirror && cargo run --bin mirror -- --help 2>&1 | grep -q "\-\-audio-source"` — live `--help` shows the flag
-- [ ] `cd /projects/chromecast-tv-mirror && git diff --quiet -- specs/` — no spec edits (G1)
+The validator runs each command from the project root it was given (`cd $ROOT`
+already happens inside validate-exit-criteria.sh). **Do NOT hardcode `cd
+/projects/...`** — in worktree mode that snaps back to the main repo which
+lacks the changes. Use cwd-relative commands.
+
+- [ ] `cargo test 2>&1 | grep -qE "^test result: ok\. [1-9]"` — suite passes
+- [ ] `cargo test --features gstreamer test_mirror_accepts_audio_source_flag 2>&1 | grep -qE "^test result: ok\. [1-9]"` — R1 acceptance
+- [ ] `cargo clippy -- -D warnings` — clean
+- [ ] `cargo run --bin mirror -- --help 2>&1 | grep -q "\-\-audio-source"` — live `--help` shows the flag
+- [ ] `git diff --quiet -- specs/` — no spec edits (G1)
 
 **Prose criteria**:
 

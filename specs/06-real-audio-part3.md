@@ -80,10 +80,15 @@ output.
 
 ## Exit Criteria
 
-- [ ] `cd /projects/chromecast-tv-mirror && test -x _tmp/audio_verify.sh && bash _tmp/audio_verify.sh 2>&1 | grep -qi "audio"` — the verification script runs and confirms an audio stream (R1)
-- [ ] `cd /projects/chromecast-tv-mirror && test -f _tmp/audio_verify.sh` — the helper exists (R3)
-- [ ] `cd /projects/chromecast-tv-mirror && git diff --quiet -- src/` — no src/ changes (verification only)
-- [ ] `cd /projects/chromecast-tv-mirror && git diff --quiet -- specs/` — no spec edits (G1)
+The validator runs each command from the project root it was given (`cd $ROOT`
+already happens inside validate-exit-criteria.sh). **Do NOT hardcode `cd
+/projects/...`** — in worktree mode that snaps back to the main repo which
+lacks the changes. Use cwd-relative commands.
+
+- [ ] `test -x _tmp/audio_verify.sh && bash _tmp/audio_verify.sh 2>&1 | grep -qi "audio"` — the verification script runs and confirms an audio stream (R1)
+- [ ] `test -f _tmp/audio_verify.sh` — the helper exists (R3)
+- [ ] `git diff --quiet -- src/` — no src/ changes (verification only)
+- [ ] `git diff --quiet -- specs/` — no spec edits (G1)
 
 **Prose criteria**:
 
