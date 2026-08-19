@@ -307,7 +307,7 @@ FAIL if any requirement is unimplemented or any test was weakened."
             WT_SLUG="$(basename "$SPEC" .md)"
             WT_TS="$(date +%s)"
             WT_BRANCH="wt/${WT_SLUG}-${WT_TS}"
-            WT_DIR="$ROOT/_tmp/worktrees/${WT_SLUG}-${WT_TS}"
+            WT_DIR="$(dirname "$ROOT")/wt-${WT_SLUG}-${WT_TS}"
             echo "== worktree isolation: $WT_BRANCH @ $WT_DIR =="
             git -C "$ROOT" worktree add -b "$WT_BRANCH" "$WT_DIR" HEAD >/dev/null 2>&1 \
                 || die "failed to create worktree $WT_DIR"
@@ -324,6 +324,22 @@ FAIL if any requirement is unimplemented or any test was weakened."
     # that phase's own cost and the task total is this run's, not lifetime.
     sd_run="$(session_dir_for "$ROOT" "$SPEC")"
     bash "$ORCH_HOME/lib/usage.sh" "$sd_run" "" --clear >/dev/null 2>&1 || true
+
+    # ------------------------------------------------------------------
+    # Discord lifecycle notification (optional, silent if unconfigured).
+    # Fires at spec START and on every exit path (success, defect, failure)
+    # so the operator can follow an autonomous run from Discord.
+    # ------------------------------------------------------------------
+    _notify() {  # _notify <event> <details>
+        [ -x "$ORCH_HOME/lib/notify-discord.sh" ] && \
+            bash "$ORCH_HOME/lib/notify-discord.sh" "$1" "$SPEC" "$ROOT" "$2" || true
+    }
+    _notify "spec started ▶️" "worktree: ${WT_BRANCH:-in-tree} · model: ${ORCH_MODEL:-pi default}"
+    trap '_notify "spec FAILED ❌" "exit $? (see terminal log)"' EXIT
+    _finish_ok() {
+        trap - EXIT
+        _notify "spec complete ✅" "$1"
+    }
 
     echo "== phase 2: implement =="
     imp_log="$ROOT/_tmp/pi-implement.$$.log"
@@ -440,11 +456,13 @@ FAIL if any requirement is unimplemented or any test was weakened."
     check_no_commit
 
     echo "== phase 6: validate exit criteria =="
-    "$SELF" validate "$SPEC" "$ROOT" || {
+    if ! "$SELF" validate "$SPEC" "$ROOT"; then
         echo
         echo "STOPPED: exit criteria not satisfied. Read them before committing."
+        _finish_ok "phases 2-6 done, but EXIT CRITERIA NOT MET — needs orchestrator judgement (exit 4)"
         exit 4
-    }
+    fi
+    _finish_ok "phases 2-6 complete (implement → gate → review → validate). Phase 7 is yours: read the diff, commit."
 
     echo
     echo "== task total =="
