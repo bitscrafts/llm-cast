@@ -1,11 +1,82 @@
 # HANDOFF — chromecast-tv-mirror
 
-**Status**: GREEN — **spec-05 (castctl --ping) LANDED** (2026-08-18):
-added `--ping <ip>` flag to `castctl` (TCP reachability to :8009, 3s
-timeout, exit 0/1); new `src/bin.rs` exposes `ping_device(host, port,
-timeout)`; tests in `tests/castctl_tests.rs` + inline; gate exit 0.
+**Status**: GREEN — **spec-06 part 1 (AudioSource seam + silent default) LANDED** (2026-08-19):
+`build_pipeline` + `GstEncoder::new` accept `audio: Option<&str>`; `None`
+preserves the silent-AAC DMR default (byte-identical), `Some(frag)` feeds a
+real source; R2/R3/R5 tests pass under `--features gstreamer`; gate exit 0.
 
-Prior: spec-03 part 3 (E2E stdio + R10 acceptance) LANDED (2026-08-17).
+Prior: spec-05 (castctl --ping) LANDED (2026-08-18). See below.
+
+---
+
+## 2026-08-19 — SPEC-06 PART 1 LANDED: AudioSource seam + silent default
+
+### What was DONE this session
+- **TDD first**: the prior agent had stalled mid-implementation with broken
+  tests using a non-existent gstreamer-rs API (`pipeline.launch().as_builder()
+  .and_then(|b| b.build_string())` — no such method in 0.22) and a hardcoded
+  `/tmp` path (G4 violation). I rewrote `tests/cast_tv_tests.rs::audio_tests`
+  to assert on a new pure `build_launch_string` helper (R2/R3) and to drive a
+  real `build_pipeline` parse for R5.
+- **Production code** (`src/encode/pipe.rs`):
+  - Extracted pure `pub fn build_launch_string(encoder, width, height, fps,
+    outdir, root, audio: Option<&str>) -> String` (NOT feature-gated — no
+    GStreamer types, so default-feature tests can use it). `build_pipeline`
+    now calls it, keeping the launch string byte-identical to the pre-seam
+    version when `audio == None` (N1).
+  - `build_pipeline` now calls `gstreamer::init()` itself (idempotent via
+    `gst_init_check`) so the R5 test — which calls `build_pipeline` directly
+    without `GstEncoder::new` — surfaces a malformed fragment as
+    `EncodeError::Gst` instead of panicking "GStreamer has not been
+    initialized" (R5: no panic).
+  - `GstEncoder::new` gained the `audio: Option<&str>` param (R4) and
+    forwards it to `build_pipeline`.
+- **Spec tension resolved minimally (reported, not coded around)**: R4 makes
+  `audio` a REQUIRED param on `GstEncoder::new`, but G7 forbids touching
+  `src/bin/mirror.rs` — the only caller. Adding the param breaks the build
+  unless the call site passes something. I added the minimal, behavior-
+  preserving `None,` argument at the `mirror.rs` call site (preserves the
+  silent default per R2/N1; the CLI flag wiring is explicitly part 2).
+  This is the smallest change that keeps the build green without weakening
+  any requirement; the orchestrator may prefer a different resolution.
+- **Guardrails kept**: no spec edits (G1); no commit (G2); no test weakened
+  (G3); test artefacts under `_tmp/` (G4); no `src/bin/mirror.rs` logic change
+  beyond the one required arg (G7 spirit — no serve/cast/mcp/capture/render/
+  emu/pipeline touches).
+
+### Outcome — gate
+- `/projects/chromecast-tv-mirror/.orchestration/lib/quality-gate.sh
+  /projects/wt-06-real-audio-part1-1787117703` → exit 0.
+- Stages: fmt PASS · check PASS · clippy -D warnings PASS · test PASS.
+- New test result lines (raw, under `--features gstreamer`, `cast_tv_tests`
+  binary):
+  - `test audio_tests::test_default_pipeline_has_silent_audio ... ok`
+  - `test audio_tests::test_pipeline_with_audio_source ... ok`
+  - `test audio_tests::test_bad_audio_source_errors ... ok`
+  - `test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 36 filtered out`
+- Spec exit-criteria commands 1-6 all verified individually (criterion 1
+  matches multiple default-feature binaries; 2/3/4 PASS; 5 clippy clean; 6
+  `git diff --quiet -- specs/` clean).
+
+### Files changed
+- `src/encode/pipe.rs` — `build_launch_string` extracted; `build_pipeline`
+  + `GstEncoder::new` gain `audio: Option<&str>`; `build_pipeline` self-inits.
+- `src/bin/mirror.rs` — one-line: added `None,` to the `GstEncoder::new`
+  call (see spec tension note above).
+- `tests/cast_tv_tests.rs` — `audio_tests` module rewritten: R2/R3 assert on
+  `build_launch_string`; R5 drives `build_pipeline` with a bad fragment;
+  scratch dir under `_tmp/` via `CARGO_MANIFEST_DIR`.
+
+### Next steps
+- **spec-06 part 2**: wire a CLI flag (`--audio <fragment>`) in `mirror.rs`
+  → `GstEncoder::new(audio: Some(...))`. The seam and the `None` default are
+  now in place; part 2 is purely the CLI plumbing (and reverting the
+  temporary `None,` I added to `mirror.rs`).
+- **spec-06 part 3**: E2E verification on a real device with a real audio
+  source.
+- Consider whether the `build_launch_string` extraction should be noted in
+  the spec's "Files to Modify" — it is a new public fn in `pipe.rs`, not a
+  separate file, so it stays within the listed scope.
 
 ---
 

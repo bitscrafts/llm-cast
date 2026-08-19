@@ -117,11 +117,12 @@ impl GstEncoder {
         outdir: &str,
         root: &str,
         url: String,
+        audio: Option<&str>,
     ) -> Result<Self, EncodeError> {
         use gstreamer::prelude::*;
 
         gstreamer::init().map_err(|e| EncodeError::Gst(e.to_string()))?;
-        let (pipeline, appsrc) = build_pipeline(encoder, width, height, fps, outdir, root)?;
+        let (pipeline, appsrc) = build_pipeline(encoder, width, height, fps, outdir, root, audio)?;
         pipeline
             .set_state(gstreamer::State::Playing)
             .map_err(|e| EncodeError::Gst(format!("set_state(Playing): {e:?}")))?;
@@ -218,17 +219,24 @@ impl Drop for GstEncoder {
 /// window). `root` becomes the playlist's absolute segment URL prefix via
 /// `playlist-root`, so the device fetches `ROOT/seg_00000.ts` and our
 /// `/segment/:name` route serves it.
-#[cfg(feature = "gstreamer")]
-pub fn build_pipeline(
+/// Build the GStreamer launch string for the HLS pipeline. Pure (no
+/// GStreamer init, no parse): factored out so the audio-source seam is
+/// testable without instantiating a real pipeline — gstreamer-rs 0.22 has
+/// no public API to recover the launch string from a parsed `Pipeline`.
+///
+/// `audio` is the AudioSource seam (spec-06 part 1): `None` → the silent
+/// AAC leg (DMR mandate, byte-identical to the pre-seam string); `Some(frag)`
+/// → the operator-supplied launch fragment, followed by `audioconvert !
+/// audioresample` so any source negotiates to the muxer's input caps.
+pub fn build_launch_string(
     encoder: &str,
     width: usize,
     height: usize,
     fps: u32,
     outdir: &str,
     root: &str,
-) -> Result<(gstreamer::Pipeline, gstreamer_app::AppSrc), EncodeError> {
-    use gstreamer::prelude::*;
-
+    audio: Option<&str>,
+) -> String {
     let enc = match encoder {
         "vaapi" => "vaapih264enc".to_string(),
         _ => {
@@ -244,23 +252,49 @@ pub fn build_pipeline(
                 .to_string()
         }
     };
+    // Build the audio leg conditionally: None → silent AAC (DMR mandate),
+    // Some(frag) → user-provided source.
+    let audio_leg = match audio {
+        None => "audiotestsrc is-live=true wave=silence ! audioconvert ! audioresample".to_string(),
+        Some(f) => format!("{f} ! audioconvert ! audioresample"),
+    };
     // A silent AAC track is MANDATORY: the Chromecast Default Media Receiver
     // refuses to play video-only HLS. On-device isolation test (2026-08-16):
     // the same film with audio fetched every segment and played; video-only
     // fetched nothing (VOD) or stalled after two segments (live). `hlssink2`
     // exposes separate request pads — `hls.video` / `hls.audio` — so the two
     // elementary streams are muxed to TS inside the element, no mpegtsmux.
-    let launch = format!(
+    format!(
         "appsrc name=src format=time is-live=true \
          caps=\"video/x-raw,format=RGBA,width={width},height={height},framerate={fps}/1\" \
          ! videoconvert ! video/x-raw,format=I420 ! {enc} \
          ! h264parse config-interval=-1 ! hls.video \
-         audiotestsrc is-live=true wave=silence ! audioconvert ! audioresample \
+         {audio_leg} \
          ! voaacenc bitrate=64000 ! aacparse ! hls.audio \
          hlssink2 name=hls location={outdir}/segment/seg_%05d.ts \
                   playlist-location={outdir}/live.m3u8 \
                   target-duration=1 max-files=30 playlist-root={root}"
-    );
+    )
+}
+
+#[cfg(feature = "gstreamer")]
+pub fn build_pipeline(
+    encoder: &str,
+    width: usize,
+    height: usize,
+    fps: u32,
+    outdir: &str,
+    root: &str,
+    audio: Option<&str>,
+) -> Result<(gstreamer::Pipeline, gstreamer_app::AppSrc), EncodeError> {
+    use gstreamer::prelude::*;
+
+    // `build_pipeline` is also exercised directly by the R5 test (a malformed
+    // fragment must surface as `EncodeError::Gst`, never a "GStreamer has not
+    // been initialized" panic). `gst_init_check` is idempotent, so calling it
+    // here is safe even when `GstEncoder::new` already initialised the library.
+    gstreamer::init().map_err(|e| EncodeError::Gst(e.to_string()))?;
+    let launch = build_launch_string(encoder, width, height, fps, outdir, root, audio);
     // gstreamer-rs 0.22 re-exports `parse_launch` as `parse::launch`.
     let element = gstreamer::parse::launch(&launch).map_err(|e| EncodeError::Gst(e.to_string()))?;
     let pipeline = element
